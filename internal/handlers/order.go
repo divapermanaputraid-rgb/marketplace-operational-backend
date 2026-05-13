@@ -326,3 +326,25 @@ func (h *OrderHandler) ReleaseReservation(c *gin.Context) {
 
 	c.JSON(http.StatusOK, models.SuccessResponse(result, "Stock reservation released successfully"))
 }
+
+func (h *OrderHandler) ConfirmSale(c *gin.Context) {
+	id := c.Param("id")
+	uID, err := uuid.Parse(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Invalid order ID"))
+		return
+	}
+
+	result, err := h.reservationSvc.ConfirmSaleForOrder(uID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", err.Error()))
+		return
+	}
+
+	if result.Status == "error" {
+		c.JSON(http.StatusBadRequest, models.SuccessResponse(result, result.Message))
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(result, "Order sale confirmed successfully"))
+}

@@ -164,6 +164,9 @@ func main() {
 		stores.POST("/:id/integration/initiate", integrationHandler.InitiateIntegration)
 		stores.POST("/:id/integration/disconnect", integrationHandler.DisconnectIntegration)
 		stores.POST("/:id/integration/test", integrationHandler.TestConnection)
+		stores.POST("/:id/integration/orders/pull", integrationHandler.PullOrders)
+
+		orders.POST("/:id/confirm-sale", orderHandler.ConfirmSale)
 	}
 
 	log.Printf("Starting server on port %s", cfg.Port)

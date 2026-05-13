@@ -59,7 +59,6 @@ func AutoMigrate(db *gorm.DB) error {
 	err := db.AutoMigrate(
 		&models.Admin{},
 		&models.Store{},
-		&models.MarketplaceConnection{},
 		&models.Product{},
 		&models.ProductImage{},
 		&models.ProductVariant{},
@@ -70,6 +69,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.OrderItem{},
 		&models.SyncJob{},
 		&models.SyncLog{},
+		&models.MarketplaceCredential{},
+		&models.MarketplaceOAuthState{},
 	)
 	if err != nil {
 		return fmt.Errorf("auto-migration failed: %w", err)

@@ -26,22 +26,26 @@ func (Store) TableName() string {
 	return "stores"
 }
 
-type MarketplaceConnection struct {
-	ID                    uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
-	StoreID               uuid.UUID  `gorm:"type:uuid;not null;index;unique" json:"store_id"`
-	Marketplace           string     `gorm:"type:varchar(50);not null" json:"marketplace"`
-	ConnectionStatus      string     `gorm:"type:varchar(50);not null;default:'not_connected'" json:"connection_status"`
-	AccessTokenEncrypted  *string    `gorm:"type:text" json:"-"` // DO NOT EXPOSE
-	RefreshTokenEncrypted *string    `gorm:"type:text" json:"-"` // DO NOT EXPOSE
-	TokenExpiresAt        *time.Time `gorm:"type:timestamptz" json:"token_expires_at,omitempty"`
-	Scopes                *string    `gorm:"type:text" json:"scopes,omitempty"`
-	ConnectedAt           *time.Time `gorm:"type:timestamptz" json:"connected_at,omitempty"`
-	DisconnectedAt        *time.Time `gorm:"type:timestamptz" json:"disconnected_at,omitempty"`
-	LastError             *string    `gorm:"type:text" json:"last_error,omitempty"`
-	CreatedAt             time.Time  `gorm:"type:timestamptz;not null;autoCreateTime" json:"created_at"`
-	UpdatedAt             time.Time  `gorm:"type:timestamptz;not null;autoUpdateTime" json:"updated_at"`
-}
-
-func (MarketplaceConnection) TableName() string {
-	return "marketplace_connections"
-}
+[diff_block_start]
+@@ -28,21 +28,1 @@
+-
+-type MarketplaceConnection struct {
+-	ID                    uuid.UUID  `gorm:"type:uuid;primaryKey;default:gen_random_uuid()" json:"id"`
+-	StoreID               uuid.UUID  `gorm:"type:uuid;not null;index;unique" json:"store_id"`
+-	Marketplace           string     `gorm:"type:varchar(50);not null" json:"marketplace"`
+-	ConnectionStatus      string     `gorm:"type:varchar(50);not null;default:'not_connected'" json:"connection_status"`
+-	AccessTokenEncrypted  *string    `gorm:"type:text" json:"-"` // DO NOT EXPOSE
+-	RefreshTokenEncrypted *string    `gorm:"type:text" json:"-"` // DO NOT EXPOSE
+-	TokenExpiresAt        *time.Time `gorm:"type:timestamptz" json:"token_expires_at,omitempty"`
+-	Scopes                *string    `gorm:"type:text" json:"scopes,omitempty"`
+-	ConnectedAt           *time.Time `gorm:"type:timestamptz" json:"connected_at,omitempty"`
+-	DisconnectedAt        *time.Time `gorm:"type:timestamptz" json:"disconnected_at,omitempty"`
+-	LastError             *string    `gorm:"type:text" json:"last_error,omitempty"`
+-	CreatedAt             time.Time  `gorm:"type:timestamptz;not null;autoCreateTime" json:"created_at"`
+-	UpdatedAt             time.Time  `gorm:"type:timestamptz;not null;autoUpdateTime" json:"updated_at"`
+-}
+-
+-func (MarketplaceConnection) TableName() string {
+-	return "marketplace_connections"
+-}
+[diff_block_end]

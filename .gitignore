@@ -7,3 +7,7 @@
 *.log
 tmp/
 .DS_Store
+
+# Local Go caches
+.cache/
+.gopath/

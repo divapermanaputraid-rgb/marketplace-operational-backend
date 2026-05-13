@@ -36,6 +36,7 @@ func main() {
 	orderRepo := repositories.NewOrderRepository(db)
 	syncRepo := repositories.NewSyncRepository(db)
 	dashboardRepo := repositories.NewDashboardRepository(db)
+	integrationRepo := repositories.NewIntegrationRepository(db)
 
 	database.SeedAdmin(db, cfg)
 
@@ -51,6 +52,7 @@ func main() {
 	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo)
 	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
+	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo)
 
 	router := gin.Default()
 	router.Use(middleware.SetupCORS(cfg))
@@ -58,6 +60,9 @@ func main() {
 	api := router.Group("/api")
 
 	api.GET("/health", healthHandler.Check)
+
+	// OAuth callback route (semi-public, validates state internally)
+	api.GET("/integrations/:marketplace/callback", integrationHandler.OAuthCallback)
 
 	auth := api.Group("/auth")
 	{
@@ -144,6 +149,18 @@ func main() {
 			dashboard.GET("/reports/products", dashboardHandler.GetProductsReport)
 			dashboard.GET("/reports/sync", dashboardHandler.GetSyncReport)
 		}
+
+		integrations := protected.Group("/integrations")
+		{
+			integrations.GET("", integrationHandler.ListIntegrations)
+			integrations.GET("/marketplaces", integrationHandler.ListSupportedMarketplaces)
+		}
+
+		// Store-scoped integration endpoints
+		stores.GET("/:id/integration", integrationHandler.GetStoreIntegration)
+		stores.POST("/:id/integration/initiate", integrationHandler.InitiateIntegration)
+		stores.POST("/:id/integration/disconnect", integrationHandler.DisconnectIntegration)
+		stores.POST("/:id/integration/test", integrationHandler.TestConnection)
 	}
 
 	log.Printf("Starting server on port %s", cfg.Port)

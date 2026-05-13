@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: marketops-backend
+    env: docker
+    region: singapore # Choose closest to Supabase
+    plan: free
+    dockerCommand: ./server
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      - key: DATABASE_URL
+        sync: false # Set manually in Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # e.g. https://your-frontend.vercel.app
+      - key: ADMIN_SEED_EMAIL
+        sync: false
+      - key: ADMIN_SEED_PASSWORD
+        sync: false # Set manually
+      - key: ADMIN_SEED_NAME
+        sync: false
+      - key: SUPABASE_STORAGE_URL
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false

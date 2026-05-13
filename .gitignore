@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+/api
+/server
+/main
+*.log
+tmp/
+.DS_Store

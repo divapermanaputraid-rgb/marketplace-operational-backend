@@ -3,7 +3,9 @@ package handlers
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -478,13 +480,14 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 
 	// Mapper for Shopee orders
 	mapper := services.NewShopeeOrderMapper(h.orderRepo, h.mappingRepo)
-	var recordsCreated, recordsUpdated, recordsFailed int
+	var recordsCreated, recordsUpdated, recordsFailed, totalUnmappedCount int
+	var pullErrors []string
 
 	for _, detail := range details {
-		created, updated, mapErr := mapper.MapAndPersist(store.ID, detail)
+		created, updated, unmappedCount, mapErr := mapper.MapAndPersist(store.ID, detail)
 		if mapErr != nil {
 			recordsFailed++
-			// Continue processing others
+			pullErrors = append(pullErrors, fmt.Sprintf("Order %s: %v", detail.OrderSN, mapErr))
 			continue
 		}
 		if created {
@@ -492,19 +495,38 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		} else if updated {
 			recordsUpdated++
 		}
+		totalUnmappedCount += unmappedCount
 	}
 
 	statusMsg := "Orders pulled and mapped successfully."
 	finalStatus := "success"
 	if recordsFailed > 0 {
-		statusMsg = "Orders pulled with some failures."
-		finalStatus = "failed" // or "partial" if supported
+		if recordsCreated > 0 || recordsUpdated > 0 {
+			finalStatus = "partial"
+			statusMsg = "Orders pulled with some failures."
+		} else {
+			finalStatus = "failed"
+			statusMsg = "Failed to process pulled orders."
+		}
 	}
 
 	// Create SyncLog
 	durationMs := int64(time.Since(startTime).Milliseconds())
 	now := time.Now()
 	msg := statusMsg
+
+	// Prepare raw summary without secrets
+	summary := gin.H{
+		"records_processed":    len(details),
+		"records_created":      recordsCreated,
+		"records_updated":      recordsUpdated,
+		"records_failed":       recordsFailed,
+		"unmapped_items_count": totalUnmappedCount,
+		"errors":               pullErrors,
+	}
+	summaryJSON, _ := json.Marshal(summary)
+	summaryStr := string(summaryJSON)
+
 	logRec := &models.SyncLog{
 		StoreID:          &store.ID,
 		Marketplace:      store.Marketplace,
@@ -519,6 +541,7 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		StartedAt:        &startTime,
 		FinishedAt:       &now,
 		DurationMs:       &durationMs,
+		RawSummary:       &summaryStr,
 	}
 	_ = h.syncRepo.CreateSyncLog(logRec)
 
@@ -529,10 +552,11 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		"records_created":      recordsCreated,
 		"records_updated":      recordsUpdated,
 		"records_failed":       recordsFailed,
-		"unmapped_items_count": 0, // Could be tracked
-		"list_res":             listRes,
-		"details":              details,
+		"unmapped_items_count": totalUnmappedCount,
+		"sync_log_id":          logRec.ID,
+		"errors":               pullErrors,
 	}, statusMsg))
+
 }
 
 // TestConnection tests the connection status for a store's marketplace integration.

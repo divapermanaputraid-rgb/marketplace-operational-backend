@@ -55,7 +55,8 @@ func MapShopeePaymentToInternal(payTime int64) string {
 }
 
 // MapAndPersist maps a single Shopee order to internal models and persists it.
-func (s *ShopeeOrderMapper) MapAndPersist(storeID uuid.UUID, detail marketplace.ShopeeOrderDetail) (bool, bool, error) {
+// Returns (created bool, updated bool, unmappedCount int, error).
+func (s *ShopeeOrderMapper) MapAndPersist(storeID uuid.UUID, detail marketplace.ShopeeOrderDetail) (bool, bool, int, error) {
 	// 1. Map order fields
 	var orderedAt, paidAt *time.Time
 	if detail.CreateTime > 0 {
@@ -94,6 +95,7 @@ func (s *ShopeeOrderMapper) MapAndPersist(storeID uuid.UUID, detail marketplace.
 
 	// 2. Map order items
 	var internalItems []models.OrderItem
+	var unmappedCount int
 	for _, item := range detail.ItemList {
 		extProductID := strconv.FormatInt(item.ItemID, 10)
 		extVariantID := strconv.FormatInt(item.ModelID, 10)
@@ -128,6 +130,7 @@ func (s *ShopeeOrderMapper) MapAndPersist(storeID uuid.UUID, detail marketplace.
 		} else {
 			notes := "Unmapped marketplace item"
 			orderItem.Notes = &notes
+			unmappedCount++
 		}
 
 		internalItems = append(internalItems, orderItem)
@@ -145,8 +148,8 @@ func (s *ShopeeOrderMapper) MapAndPersist(storeID uuid.UUID, detail marketplace.
 	// 3. Persist
 	created, err := s.orderRepo.UpsertOrderWithItems(order)
 	if err != nil {
-		return false, false, err
+		return false, false, 0, err
 	}
 
-	return created, !created, nil
+	return created, !created, unmappedCount, nil
 }

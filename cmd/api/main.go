@@ -37,9 +37,7 @@ func main() {
 	syncRepo := repositories.NewSyncRepository(db)
 	dashboardRepo := repositories.NewDashboardRepository(db)
 
-	if err := database.SeedAdmin(db, cfg); err != nil {
-		log.Fatalf("Failed to seed admin: %v", err)
-	}
+	database.SeedAdmin(db, cfg)
 
 	jwtService := services.NewJWTService(cfg.JWTSecret)
 
@@ -55,7 +53,7 @@ func main() {
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
 
 	router := gin.Default()
-	router.Use(middleware.CORS(cfg.CORSAllowedOrigins))
+	router.Use(middleware.SetupCORS(cfg))
 
 	api := router.Group("/api")
 
@@ -65,7 +63,7 @@ func main() {
 	{
 		auth.POST("/login", authHandler.Login)
 		authProtected := auth.Group("")
-		authProtected.Use(middleware.RequireAuth(jwtService))
+		authProtected.Use(middleware.AuthRequired(jwtService))
 		{
 			authProtected.GET("/me", authHandler.Me)
 			authProtected.POST("/logout", authHandler.Logout)
@@ -74,7 +72,7 @@ func main() {
 	}
 
 	protected := api.Group("")
-	protected.Use(middleware.RequireAuth(jwtService))
+	protected.Use(middleware.AuthRequired(jwtService))
 	{
 		stores := protected.Group("/stores")
 		{

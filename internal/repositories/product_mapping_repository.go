@@ -93,3 +93,18 @@ func (r *ProductMappingRepository) CheckDuplicateMapping(storeID, externalProduc
 		Count(&count).Error
 	return count > 0, err
 }
+
+func (r *ProductMappingRepository) FindByExternalID(storeID, externalProductID, externalVariantID string) (*models.MarketplaceProductMapping, error) {
+	var mapping models.MarketplaceProductMapping
+	err := r.db.Where("store_id = ?", storeID).
+		Where("external_product_id = ?", externalProductID).
+		Where("COALESCE(external_variant_id, '') = ?", externalVariantID).
+		First(&mapping).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // Return nil, nil when not found
+		}
+		return nil, err
+	}
+	return &mapping, nil
+}

@@ -13,17 +13,30 @@ import (
 	"github.com/marketplace-ops/backend/internal/models"
 	"github.com/marketplace-ops/backend/internal/repositories"
 	"github.com/marketplace-ops/backend/internal/security"
+	"github.com/marketplace-ops/backend/internal/services"
 )
 
 type IntegrationHandler struct {
 	integrationRepo *repositories.IntegrationRepository
 	storeRepo       *repositories.StoreRepository
+	orderRepo       *repositories.OrderRepository
+	mappingRepo     *repositories.ProductMappingRepository
+	syncRepo        *repositories.SyncRepository
 }
 
-func NewIntegrationHandler(integrationRepo *repositories.IntegrationRepository, storeRepo *repositories.StoreRepository) *IntegrationHandler {
+func NewIntegrationHandler(
+	integrationRepo *repositories.IntegrationRepository,
+	storeRepo *repositories.StoreRepository,
+	orderRepo *repositories.OrderRepository,
+	mappingRepo *repositories.ProductMappingRepository,
+	syncRepo *repositories.SyncRepository,
+) *IntegrationHandler {
 	return &IntegrationHandler{
 		integrationRepo: integrationRepo,
 		storeRepo:       storeRepo,
+		orderRepo:       orderRepo,
+		mappingRepo:     mappingRepo,
+		syncRepo:        syncRepo,
 	}
 }
 
@@ -358,6 +371,7 @@ func (h *IntegrationHandler) DisconnectIntegration(c *gin.Context) {
 // PullOrders manually pulls orders for a marketplace integration.
 // POST /api/stores/:id/integration/orders/pull
 func (h *IntegrationHandler) PullOrders(c *gin.Context) {
+	startTime := time.Now()
 	storeID := c.Param("id")
 
 	var req struct {
@@ -462,18 +476,63 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		}
 	}
 
-	// TODO: Save to DB
+	// Mapper for Shopee orders
+	mapper := services.NewShopeeOrderMapper(h.orderRepo, h.mappingRepo)
+	var recordsCreated, recordsUpdated, recordsFailed int
+
+	for _, detail := range details {
+		created, updated, mapErr := mapper.MapAndPersist(store.ID, detail)
+		if mapErr != nil {
+			recordsFailed++
+			// Continue processing others
+			continue
+		}
+		if created {
+			recordsCreated++
+		} else if updated {
+			recordsUpdated++
+		}
+	}
+
+	statusMsg := "Orders pulled and mapped successfully."
+	finalStatus := "success"
+	if recordsFailed > 0 {
+		statusMsg = "Orders pulled with some failures."
+		finalStatus = "failed" // or "partial" if supported
+	}
+
+	// Create SyncLog
+	durationMs := int64(time.Since(startTime).Milliseconds())
+	now := time.Now()
+	msg := statusMsg
+	logRec := &models.SyncLog{
+		StoreID:          &store.ID,
+		Marketplace:      store.Marketplace,
+		SyncType:         "orders",
+		SyncDirection:    "pull",
+		Status:           finalStatus,
+		Message:          &msg,
+		RecordsProcessed: len(details),
+		RecordsCreated:   recordsCreated,
+		RecordsUpdated:   recordsUpdated,
+		RecordsFailed:    recordsFailed,
+		StartedAt:        &startTime,
+		FinishedAt:       &now,
+		DurationMs:       &durationMs,
+	}
+	_ = h.syncRepo.CreateSyncLog(logRec)
 
 	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
-		"status":            "success",
-		"message":           "Orders pulled successfully",
-		"records_processed": len(listRes.Orders),
-		"records_created":   0,
-		"records_updated":   0,
-		"records_failed":    0,
-		"list_res":          listRes,
-		"details":           details,
-	}, "Orders pulled successfully"))
+		"status":               finalStatus,
+		"message":              statusMsg,
+		"records_processed":    len(details),
+		"records_created":      recordsCreated,
+		"records_updated":      recordsUpdated,
+		"records_failed":       recordsFailed,
+		"unmapped_items_count": 0, // Could be tracked
+		"list_res":             listRes,
+		"details":              details,
+	}, statusMsg))
 }
 
 // TestConnection tests the connection status for a store's marketplace integration.

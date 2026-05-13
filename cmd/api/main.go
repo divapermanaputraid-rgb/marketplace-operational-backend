@@ -52,7 +52,7 @@ func main() {
 	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo)
 	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
-	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo)
+	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo, orderRepo, productMappingRepo, syncRepo)
 
 	router := gin.Default()
 	router.Use(middleware.SetupCORS(cfg))

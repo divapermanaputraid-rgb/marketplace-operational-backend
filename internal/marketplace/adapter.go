@@ -23,6 +23,49 @@ type TokenResult struct {
 	Scopes                string
 }
 
+// ShopeeShopInfo holds safe metadata about the connected shop.
+type ShopeeShopInfo struct {
+	ShopID   string
+	ShopName string
+	Region   string
+	Status   string
+}
+
+// Order data types exposed to integration handler
+type ShopeeOrderSummary struct {
+	OrderSN     string
+	OrderStatus string
+}
+
+type ShopeeOrderListResponse struct {
+	More       bool
+	NextCursor string
+	Orders     []ShopeeOrderSummary
+}
+
+type ShopeeOrderDetail struct {
+	OrderSN     string
+	Region      string
+	Currency    string
+	TotalAmount float64
+	OrderStatus string
+	CreateTime  int64
+	PayTime     int64
+	ItemList    []ShopeeOrderItem
+	RawPayload  string
+}
+
+type ShopeeOrderItem struct {
+	ItemID     int64
+	ModelID    int64
+	ItemName   string
+	ModelName  string
+	ItemSKU    string
+	ModelSKU   string
+	ModelQty   int
+	ModelPrice float64
+}
+
 // MarketplaceAdapter defines the interface that all marketplace integrations must implement.
 // For Sprint 13, all methods return ErrNotImplemented or ErrMissingCredentials.
 type MarketplaceAdapter interface {
@@ -41,8 +84,14 @@ type MarketplaceAdapter interface {
 	// ValidateCredentials checks if the configured credentials are valid.
 	ValidateCredentials() error
 
-	// PullOrders pulls orders from the marketplace. Not implemented in Sprint 13.
-	PullOrders() error
+	// GetShopInfo pulls shop information to validate connection.
+	GetShopInfo(accessToken string, shopID string) (*ShopeeShopInfo, error)
+
+	// PullOrders pulls orders from the marketplace.
+	PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error)
+
+	// GetOrderDetails pulls detailed information for a list of order IDs.
+	GetOrderDetails(accessToken, shopID string, orderSNs []string) ([]ShopeeOrderDetail, error)
 
 	// PullProducts pulls products/listings from the marketplace. Not implemented in Sprint 13.
 	PullProducts() error

@@ -32,10 +32,18 @@ func (a *TikTokShopAdapter) ValidateCredentials() error {
 	return ErrMissingCredentials
 }
 
+func (a *TikTokShopAdapter) GetShopInfo(accessToken string, shopID string) (*ShopeeShopInfo, error) {
+	return nil, ErrNotImplemented
+}
+
 // PullOrders pulls orders from TikTok Shop.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TikTokShopAdapter) PullOrders() error {
-	return ErrNotImplemented
+func (a *TikTokShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error) {
+	return nil, ErrNotImplemented
+}
+
+func (a *TikTokShopAdapter) GetOrderDetails(accessToken, shopID string, orderSNs []string) ([]ShopeeOrderDetail, error) {
+	return nil, ErrNotImplemented
 }
 
 // PullProducts pulls products from TikTok Shop.

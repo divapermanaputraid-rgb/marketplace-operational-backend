@@ -355,6 +355,127 @@ func (h *IntegrationHandler) DisconnectIntegration(c *gin.Context) {
 	c.JSON(http.StatusOK, models.SuccessResponse(cred.ToResponse(), "Integration disconnected successfully"))
 }
 
+// PullOrders manually pulls orders for a marketplace integration.
+// POST /api/stores/:id/integration/orders/pull
+func (h *IntegrationHandler) PullOrders(c *gin.Context) {
+	storeID := c.Param("id")
+
+	var req struct {
+		TimeFrom    int64  `json:"time_from"`
+		TimeTo      int64  `json:"time_to"`
+		OrderStatus string `json:"order_status"`
+		PageSize    int    `json:"page_size"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_REQUEST", "Invalid request body"))
+		return
+	}
+
+	if req.TimeFrom == 0 || req.TimeTo == 0 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "time_from and time_to are required"))
+		return
+	}
+
+	store, err := h.storeRepo.FindByID(storeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
+		return
+	}
+
+	adapter, err := marketplace.GetAdapter(store.Marketplace)
+	if err != nil {
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":  "unsupported",
+			"message": "This marketplace is not supported.",
+		}, "Marketplace not supported"))
+		return
+	}
+
+	credErr := adapter.ValidateCredentials()
+	if credErr != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("MISSING_CREDENTIALS", "Marketplace API credentials are not configured in backend environment."))
+		return
+	}
+
+	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
+	if cred == nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("NOT_CONFIGURED", "No credentials configured for this marketplace."))
+		return
+	}
+
+	// Validate token expiration
+	if cred.AccessTokenExpiresAt != nil && time.Now().After(*cred.AccessTokenExpiresAt) {
+		cred.ConnectionStatus = "expired"
+		errStr := "Access token has expired."
+		cred.LastError = &errStr
+		_ = h.integrationRepo.UpdateCredential(cred)
+
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_EXPIRED", "Access token expired. Please reconnect."))
+		return
+	}
+
+	if cred.EncryptedAccessToken == nil || *cred.EncryptedAccessToken == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_MISSING", "Access token is missing."))
+		return
+	}
+
+	accessToken, err := security.DecryptToken(*cred.EncryptedAccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("DECRYPTION_FAILED", "Failed to decrypt token for validation"))
+		return
+	}
+
+	extStoreID := ""
+	if store.ExternalStoreID != nil {
+		extStoreID = *store.ExternalStoreID
+	}
+
+	// For Sprint 17: We pull the list but don't map to DB yet to keep the diff clean.
+	// The mapping logic should happen in a service. Let's just return the raw payload for validation.
+	listRes, err := adapter.PullOrders(accessToken, extStoreID, req.TimeFrom, req.TimeTo, "")
+
+	if err != nil {
+		if errors.Is(err, marketplace.ErrNotImplemented) {
+			c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+				"status":  "not_implemented",
+				"message": "Pull orders is not implemented for this marketplace.",
+			}, "Pull orders not implemented"))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull orders: "+err.Error()))
+		return
+	}
+
+	// Attempt to pull details for the first batch
+	var orderSNs []string
+	for _, o := range listRes.Orders {
+		orderSNs = append(orderSNs, o.OrderSN)
+	}
+
+	var details []marketplace.ShopeeOrderDetail
+	if len(orderSNs) > 0 {
+		details, err = adapter.GetOrderDetails(accessToken, extStoreID, orderSNs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull order details: "+err.Error()))
+			return
+		}
+	}
+
+	// TODO: Save to DB
+
+	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+		"status":            "success",
+		"message":           "Orders pulled successfully",
+		"records_processed": len(listRes.Orders),
+		"records_created":   0,
+		"records_updated":   0,
+		"records_failed":    0,
+		"list_res":          listRes,
+		"details":           details,
+	}, "Orders pulled successfully"))
+}
+
 // TestConnection tests the connection status for a store's marketplace integration.
 // POST /api/stores/:id/integration/test
 func (h *IntegrationHandler) TestConnection(c *gin.Context) {
@@ -366,7 +487,6 @@ func (h *IntegrationHandler) TestConnection(c *gin.Context) {
 		return
 	}
 
-	// Check if adapter exists
 	adapter, err := marketplace.GetAdapter(store.Marketplace)
 	if err != nil {
 		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
@@ -378,46 +498,118 @@ func (h *IntegrationHandler) TestConnection(c *gin.Context) {
 		return
 	}
 
-	// Check credential validity
 	credErr := adapter.ValidateCredentials()
-
-	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
-
-	status := "not_configured"
-	message := "No credentials configured for this marketplace."
-
-	if cred != nil {
-		status = cred.ConnectionStatus
-	}
-
 	if credErr != nil {
-		if errors.Is(credErr, marketplace.ErrMissingCredentials) {
-			status = "missing_credentials"
-			message = "Marketplace API credentials are not configured in backend environment."
-		} else if errors.Is(credErr, marketplace.ErrNotImplemented) {
+		status := "missing_credentials"
+		message := "Marketplace API credentials are not configured in backend environment."
+		if errors.Is(credErr, marketplace.ErrNotImplemented) {
 			status = "not_implemented"
 			message = "Marketplace integration is not implemented yet."
 		}
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"store_id":          store.ID,
+			"marketplace":       store.Marketplace,
+			"connection_status": status,
+			"message":           message,
+			"tested_at":         time.Now(),
+		}, message))
+		return
 	}
+
+	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
+	if cred == nil {
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"store_id":          store.ID,
+			"marketplace":       store.Marketplace,
+			"connection_status": "not_configured",
+			"message":           "No credentials configured for this marketplace.",
+			"tested_at":         time.Now(),
+		}, "No credentials configured"))
+		return
+	}
+
+	// Validate token expiration
+	if cred.AccessTokenExpiresAt != nil && time.Now().After(*cred.AccessTokenExpiresAt) {
+		cred.ConnectionStatus = "expired"
+		errStr := "Access token has expired."
+		cred.LastError = &errStr
+		_ = h.integrationRepo.UpdateCredential(cred)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"store_id":          store.ID,
+			"marketplace":       store.Marketplace,
+			"connection_status": cred.ConnectionStatus,
+			"message":           "Access token expired.",
+			"tested_at":         time.Now(),
+			"token_expired":     true,
+			"needs_reconnect":   true,
+		}, "Access token expired"))
+		return
+	}
+
+	if cred.EncryptedAccessToken == nil || *cred.EncryptedAccessToken == "" {
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"store_id":          store.ID,
+			"marketplace":       store.Marketplace,
+			"connection_status": "failed",
+			"message":           "Access token is missing.",
+			"tested_at":         time.Now(),
+			"needs_reconnect":   true,
+		}, "Access token missing"))
+		return
+	}
+
+	accessToken, err := security.DecryptToken(*cred.EncryptedAccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("DECRYPTION_FAILED", "Failed to decrypt token for validation"))
+		return
+	}
+
+	// Make the real API call
+	extStoreID := ""
+	if store.ExternalStoreID != nil {
+		extStoreID = *store.ExternalStoreID
+	}
+	shopInfo, err := adapter.GetShopInfo(accessToken, extStoreID)
 
 	result := gin.H{
-		"store_id":          store.ID,
-		"marketplace":       store.Marketplace,
-		"connection_status": status,
-		"message":           message,
-		"tested_at":         time.Now(),
+		"store_id":    store.ID,
+		"marketplace": store.Marketplace,
+		"tested_at":   time.Now(),
 	}
 
-	// Add credential info if exists
-	if cred != nil {
-		result["has_credential"] = true
-		result["has_access_token"] = cred.EncryptedAccessToken != nil && *cred.EncryptedAccessToken != ""
-		result["has_refresh_token"] = cred.EncryptedRefreshToken != nil && *cred.EncryptedRefreshToken != ""
-	} else {
-		result["has_credential"] = false
+	if err != nil {
+		if errors.Is(err, marketplace.ErrNotImplemented) {
+			result["connection_status"] = cred.ConnectionStatus
+			result["message"] = "Integration connected, but validation endpoint is not implemented."
+			c.JSON(http.StatusOK, models.SuccessResponse(result, "Connected (validation not supported)"))
+			return
+		}
+
+		errStr := err.Error()
+		cred.LastError = &errStr
+		cred.ConnectionStatus = "failed"
+		_ = h.integrationRepo.UpdateCredential(cred)
+
+		result["connection_status"] = "failed"
+		result["message"] = "Shopee API connection failed: " + errStr
+		result["last_error"] = errStr
+
+		c.JSON(http.StatusOK, models.SuccessResponse(result, "API Connection Failed"))
+		return
 	}
 
-	c.JSON(http.StatusOK, models.SuccessResponse(result, message))
+	now := time.Now()
+	cred.ConnectionStatus = "connected"
+	cred.LastConnectedAt = &now
+	cred.LastError = nil
+	_ = h.integrationRepo.UpdateCredential(cred)
+
+	result["connection_status"] = "connected"
+	result["message"] = "Connection to Shopee API successful."
+	result["shop_info"] = shopInfo
+
+	c.JSON(http.StatusOK, models.SuccessResponse(result, "Connection successful"))
 }
 
 // ListSupportedMarketplaces returns the list of supported marketplaces and their integration status.

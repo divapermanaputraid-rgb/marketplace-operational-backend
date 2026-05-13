@@ -33,10 +33,18 @@ func (a *TokopediaShopAdapter) ValidateCredentials() error {
 	return ErrMissingCredentials
 }
 
+func (a *TokopediaShopAdapter) GetShopInfo(accessToken string, shopID string) (*ShopeeShopInfo, error) {
+	return nil, ErrNotImplemented
+}
+
 // PullOrders pulls orders from Tokopedia Shop.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TokopediaShopAdapter) PullOrders() error {
-	return ErrNotImplemented
+func (a *TokopediaShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error) {
+	return nil, ErrNotImplemented
+}
+
+func (a *TokopediaShopAdapter) GetOrderDetails(accessToken, shopID string, orderSNs []string) ([]ShopeeOrderDetail, error) {
+	return nil, ErrNotImplemented
 }
 
 // PullProducts pulls products from Tokopedia Shop.

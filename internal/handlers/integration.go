@@ -410,13 +410,67 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 
 	credErr := adapter.ValidateCredentials()
 	if credErr != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse("MISSING_CREDENTIALS", "Marketplace API credentials are not configured in backend environment."))
+		status := "not_configured"
+		msg := "Marketplace API credentials are not configured in backend environment."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "orders",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":               status,
+			"message":              msg,
+			"records_processed":    0,
+			"records_created":      0,
+			"records_updated":      0,
+			"records_failed":       0,
+			"unmapped_items_count": 0,
+		}, msg))
 		return
 	}
 
 	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
 	if cred == nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse("NOT_CONFIGURED", "No credentials configured for this marketplace."))
+		status := "not_configured"
+		msg := "No credentials configured for this marketplace."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "orders",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":               status,
+			"message":              msg,
+			"records_processed":    0,
+			"records_created":      0,
+			"records_updated":      0,
+			"records_failed":       0,
+			"unmapped_items_count": 0,
+		}, msg))
 		return
 	}
 
@@ -427,7 +481,34 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		cred.LastError = &errStr
 		_ = h.integrationRepo.UpdateCredential(cred)
 
-		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_EXPIRED", "Access token expired. Please reconnect."))
+		status := "expired"
+		msg := "Access token expired. Please reconnect."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "orders",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":               status,
+			"message":              msg,
+			"records_processed":    0,
+			"records_created":      0,
+			"records_updated":      0,
+			"records_failed":       0,
+			"unmapped_items_count": 0,
+		}, msg))
 		return
 	}
 
@@ -447,9 +528,9 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		extStoreID = *store.ExternalStoreID
 	}
 
-	// For Sprint 17: We pull the list but don't map to DB yet to keep the diff clean.
-	// The mapping logic should happen in a service. Let's just return the raw payload for validation.
+	// Pull order list from marketplace
 	listRes, err := adapter.PullOrders(accessToken, extStoreID, req.TimeFrom, req.TimeTo, "")
+
 
 	if err != nil {
 		if errors.Is(err, marketplace.ErrNotImplemented) {
@@ -527,6 +608,11 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 	summaryJSON, _ := json.Marshal(summary)
 	summaryStr := string(summaryJSON)
 
+	var firstErrMsg *string
+	if len(pullErrors) > 0 {
+		firstErrMsg = &pullErrors[0]
+	}
+
 	logRec := &models.SyncLog{
 		StoreID:          &store.ID,
 		Marketplace:      store.Marketplace,
@@ -538,6 +624,7 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		RecordsCreated:   recordsCreated,
 		RecordsUpdated:   recordsUpdated,
 		RecordsFailed:    recordsFailed,
+		ErrorMessage:     firstErrMsg,
 		StartedAt:        &startTime,
 		FinishedAt:       &now,
 		DurationMs:       &durationMs,

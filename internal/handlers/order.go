@@ -8,17 +8,24 @@ import (
 	"github.com/google/uuid"
 	"github.com/marketplace-ops/backend/internal/models"
 	"github.com/marketplace-ops/backend/internal/repositories"
+	"github.com/marketplace-ops/backend/internal/services"
 )
 
 type OrderHandler struct {
-	orderRepo *repositories.OrderRepository
-	storeRepo *repositories.StoreRepository
+	orderRepo      *repositories.OrderRepository
+	storeRepo      *repositories.StoreRepository
+	reservationSvc *services.InventoryReservationService
 }
 
-func NewOrderHandler(orderRepo *repositories.OrderRepository, storeRepo *repositories.StoreRepository) *OrderHandler {
+func NewOrderHandler(
+	orderRepo *repositories.OrderRepository,
+	storeRepo *repositories.StoreRepository,
+	reservationSvc *services.InventoryReservationService,
+) *OrderHandler {
 	return &OrderHandler{
-		orderRepo: orderRepo,
-		storeRepo: storeRepo,
+		orderRepo:      orderRepo,
+		storeRepo:      storeRepo,
+		reservationSvc: reservationSvc,
 	}
 }
 
@@ -274,4 +281,48 @@ func (h *OrderHandler) DeleteOrder(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, models.SuccessResponse(nil, "Order deleted successfully"))
+}
+
+func (h *OrderHandler) ReserveStock(c *gin.Context) {
+	id := c.Param("id")
+	uID, err := uuid.Parse(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Invalid order ID"))
+		return
+	}
+
+	result, err := h.reservationSvc.ReserveStockForOrder(uID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", err.Error()))
+		return
+	}
+
+	if result.Status == "error" || result.Status == "insufficient_stock" {
+		c.JSON(http.StatusBadRequest, models.SuccessResponse(result, result.Message))
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(result, "Stock reservation successful"))
+}
+
+func (h *OrderHandler) ReleaseReservation(c *gin.Context) {
+	id := c.Param("id")
+	uID, err := uuid.Parse(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Invalid order ID"))
+		return
+	}
+
+	result, err := h.reservationSvc.ReleaseReservationForOrder(uID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", err.Error()))
+		return
+	}
+
+	if result.Status == "error" {
+		c.JSON(http.StatusBadRequest, models.SuccessResponse(result, result.Message))
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(result, "Stock reservation released successfully"))
 }

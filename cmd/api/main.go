@@ -41,6 +41,7 @@ func main() {
 	database.SeedAdmin(db, cfg)
 
 	jwtService := services.NewJWTService(cfg.JWTSecret)
+	reservationService := services.NewInventoryReservationService(inventoryRepo, orderRepo)
 
 	// Handlers
 	healthHandler := handlers.NewHealthHandler()
@@ -49,7 +50,7 @@ func main() {
 	productHandler := handlers.NewProductHandler(productRepo)
 	productMappingHandler := handlers.NewProductMappingHandler(productMappingRepo, productRepo, storeRepo)
 	inventoryHandler := handlers.NewInventoryHandler(inventoryRepo, productRepo, productMappingRepo)
-	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo)
+	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo, reservationService)
 	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
 	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo, orderRepo, productMappingRepo, syncRepo)
@@ -127,6 +128,8 @@ func main() {
 			orders.GET("/:id", orderHandler.GetOrder)
 			orders.PATCH("/:id", orderHandler.UpdateOrder)
 			orders.DELETE("/:id", orderHandler.DeleteOrder)
+			orders.POST("/:id/reserve-stock", orderHandler.ReserveStock)
+			orders.POST("/:id/release-reservation", orderHandler.ReleaseReservation)
 		}
 
 		sync := protected.Group("/sync")

@@ -114,6 +114,24 @@ func (r *InventoryRepository) ListMovements(itemID string, movementType string) 
 	return movements, err
 }
 
+func (r *InventoryRepository) GetMovementByReference(itemID string, refType string, refID string, movementType string) (*models.InventoryMovement, error) {
+	var movement models.InventoryMovement
+	err := r.db.Where("inventory_item_id = ? AND reference_type = ? AND reference_id = ? AND movement_type = ?", itemID, refType, refID, movementType).First(&movement).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &movement, nil
+}
+
+func (r *InventoryRepository) ListMovementsByReference(refType string, refID string) ([]models.InventoryMovement, error) {
+	var movements []models.InventoryMovement
+	err := r.db.Where("reference_type = ? AND reference_id = ?", refType, refID).Find(&movements).Error
+	return movements, err
+}
+
 func (r *InventoryRepository) WithTransaction(fn func(tx *gorm.DB) error) error {
 	return r.db.Transaction(fn)
 }

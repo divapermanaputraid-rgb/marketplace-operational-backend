@@ -531,7 +531,6 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 	// Pull order list from marketplace
 	listRes, err := adapter.PullOrders(accessToken, extStoreID, req.TimeFrom, req.TimeTo, "")
 
-
 	if err != nil {
 		if errors.Is(err, marketplace.ErrNotImplemented) {
 			c.JSON(http.StatusOK, models.SuccessResponse(gin.H{

@@ -33,10 +33,10 @@ type MarketplaceAdapter interface {
 	BuildAuthorizationURL(storeID string, state string) (string, error)
 
 	// ExchangeAuthCode exchanges an authorization code for access and refresh tokens.
-	ExchangeAuthCode(code string) (*TokenResult, error)
+	ExchangeAuthCode(code string, shopID string) (*TokenResult, error)
 
 	// RefreshToken uses a refresh token to obtain a new access token.
-	RefreshToken(refreshToken string) (*TokenResult, error)
+	RefreshToken(refreshToken string, shopID string) (*TokenResult, error)
 
 	// ValidateCredentials checks if the configured credentials are valid.
 	ValidateCredentials() error

@@ -16,13 +16,13 @@ func (a *TikTokShopAdapter) BuildAuthorizationURL(storeID string, state string) 
 
 // ExchangeAuthCode exchanges the authorization code for tokens.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TikTokShopAdapter) ExchangeAuthCode(code string) (*TokenResult, error) {
+func (a *TikTokShopAdapter) ExchangeAuthCode(code string, shopID string) (*TokenResult, error) {
 	return nil, ErrNotImplemented
 }
 
-// RefreshToken refreshes the access token.
+// RefreshToken uses a refresh token to obtain a new access token.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TikTokShopAdapter) RefreshToken(refreshToken string) (*TokenResult, error) {
+func (a *TikTokShopAdapter) RefreshToken(refreshToken string, shopID string) (*TokenResult, error) {
 	return nil, ErrNotImplemented
 }
 

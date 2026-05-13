@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/marketplace-ops/backend/internal/marketplace"
 	"github.com/marketplace-ops/backend/internal/models"
 	"github.com/marketplace-ops/backend/internal/repositories"
+	"github.com/marketplace-ops/backend/internal/security"
 )
 
 type IntegrationHandler struct {
@@ -182,7 +184,7 @@ func (h *IntegrationHandler) OAuthCallback(c *gin.Context) {
 	code := c.Query("code")
 
 	// Validate marketplace
-	_, err := marketplace.GetAdapter(mktplace)
+	adapter, err := marketplace.GetAdapter(mktplace)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse("UNSUPPORTED_MARKETPLACE", "Unsupported marketplace: "+mktplace))
 		return
@@ -230,17 +232,91 @@ func (h *IntegrationHandler) OAuthCallback(c *gin.Context) {
 	// Mark state as used
 	_ = h.integrationRepo.MarkOAuthStateUsed(oauthState)
 
-	// Sprint 13: Token exchange is NOT implemented yet.
-	// The callback is received and validated, but the actual API call to exchange
-	// the code for tokens will be added in a future sprint.
+	shopID := c.Query("shop_id")
+	tokenResult, err := adapter.ExchangeAuthCode(code, shopID)
+	if err != nil {
+		if errors.Is(err, marketplace.ErrNotImplemented) {
+			c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+				"marketplace":  mktplace,
+				"store_id":     oauthState.StoreID,
+				"state_valid":  true,
+				"code_present": code != "",
+				"status":       "callback_received",
+				"message":      "OAuth callback received and validated. Token exchange is not implemented yet.",
+			}, "OAuth callback received but token exchange is not implemented yet"))
+			return
+		}
+
+		cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(oauthState.StoreID.String(), mktplace)
+		if cred != nil {
+			errStr := err.Error()
+			cred.LastError = &errStr
+			cred.ConnectionStatus = "failed"
+			_ = h.integrationRepo.UpdateCredential(cred)
+		}
+
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("EXCHANGE_FAILED", "Failed to exchange authorization code: "+err.Error()))
+		return
+	}
+
+	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(oauthState.StoreID.String(), mktplace)
+	if cred == nil {
+		cred = &models.MarketplaceCredential{
+			StoreID:     oauthState.StoreID,
+			Marketplace: mktplace,
+		}
+	}
+
+	if tokenResult != nil {
+		encAccess, errA := security.EncryptToken(tokenResult.AccessToken)
+		encRefresh, errR := security.EncryptToken(tokenResult.RefreshToken)
+
+		if errA == nil && errR == nil {
+			cred.EncryptedAccessToken = &encAccess
+			cred.EncryptedRefreshToken = &encRefresh
+			cred.AccessTokenExpiresAt = &tokenResult.AccessTokenExpiresAt
+			cred.RefreshTokenExpiresAt = &tokenResult.RefreshTokenExpiresAt
+
+			now := time.Now()
+			cred.LastConnectedAt = &now
+			cred.ConnectionStatus = "connected"
+			cred.LastError = nil
+
+			if cred.ID == uuid.Nil {
+				_ = h.integrationRepo.CreateCredential(cred)
+			} else {
+				_ = h.integrationRepo.UpdateCredential(cred)
+			}
+
+			c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+				"marketplace": mktplace,
+				"store_id":    oauthState.StoreID,
+				"status":      "connected",
+				"message":     "OAuth integration completed successfully.",
+			}, "Integration successful"))
+			return
+		} else {
+			errStr := "Failed to encrypt tokens"
+			cred.LastError = &errStr
+			cred.ConnectionStatus = "failed"
+			if cred.ID == uuid.Nil {
+				_ = h.integrationRepo.CreateCredential(cred)
+			} else {
+				_ = h.integrationRepo.UpdateCredential(cred)
+			}
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse("ENCRYPTION_FAILED", errStr))
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
 		"marketplace":  mktplace,
 		"store_id":     oauthState.StoreID,
 		"state_valid":  true,
 		"code_present": code != "",
 		"status":       "callback_received",
-		"message":      "OAuth callback received and validated. Token exchange is not implemented yet.",
-	}, "OAuth callback received but token exchange is not implemented yet"))
+		"message":      "OAuth callback received and validated.",
+	}, "OAuth callback received"))
 }
 
 // DisconnectIntegration disconnects a store's marketplace integration.

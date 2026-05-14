@@ -56,14 +56,64 @@ type ShopeeOrderDetail struct {
 }
 
 type ShopeeOrderItem struct {
-	ItemID     int64
-	ModelID    int64
-	ItemName   string
-	ModelName  string
-	ItemSKU    string
-	ModelSKU   string
-	ModelQty   int
-	ModelPrice float64
+	ItemID     int64   `json:"item_id"`
+	ModelID    int64   `json:"model_id"`
+	ItemName   string  `json:"item_name"`
+	ModelName  string  `json:"model_name"`
+	ItemSKU    string  `json:"item_sku"`
+	ModelSKU   string  `json:"model_sku"`
+	ModelQty   int     `json:"model_qty"`
+	ModelPrice float64 `json:"model_price"`
+}
+
+// Product data types for Shopee
+type ShopeeProductSummary struct {
+	ItemID     int64  `json:"item_id"`
+	ItemStatus string `json:"item_status"`
+	UpdateTime int64  `json:"update_time"`
+}
+
+type ShopeeProductListResponse struct {
+	HasNextPage bool                   `json:"has_next_page"`
+	NextOffset  int                    `json:"next_offset"`
+	Items       []ShopeeProductSummary `json:"item_list"`
+}
+
+type ShopeeProductDetail struct {
+	ItemID      int64                  `json:"item_id"`
+	ItemName    string                 `json:"item_name"`
+	Description string                 `json:"description"`
+	ItemSKU     string                 `json:"item_sku"`
+	CreateTime  int64                  `json:"create_time"`
+	UpdateTime  int64                  `json:"update_time"`
+	ItemStatus  string                 `json:"item_status"`
+	PriceInfo   []ShopeePriceInfo      `json:"price_info"`
+	StockInfo   []ShopeeStockInfo      `json:"stock_info"`
+	Models      []ShopeeProductVariant `json:"model"`
+	Images      struct {
+		ImageIDList  []string `json:"image_id_list"`
+		ImageUrlList []string `json:"image_url_list"`
+	} `json:"image"`
+}
+
+type ShopeePriceInfo struct {
+	Currency      string  `json:"currency"`
+	OriginalPrice float64 `json:"original_price"`
+}
+
+type ShopeeStockInfo struct {
+	StockType      int `json:"stock_type"`
+	NormalStock    int `json:"normal_stock"`
+	ReservedStock  int `json:"reserved_stock"`
+	TotalAvailable int `json:"total_available"`
+}
+
+type ShopeeProductVariant struct {
+	ModelID   int64             `json:"model_id"`
+	ModelSKU  string            `json:"model_sku"`
+	ModelName string            `json:"model_name"`
+	PriceInfo []ShopeePriceInfo `json:"price_info"`
+	StockInfo []ShopeeStockInfo `json:"stock_info"`
 }
 
 // MarketplaceAdapter defines the interface that all marketplace integrations must implement.
@@ -93,10 +143,13 @@ type MarketplaceAdapter interface {
 	// GetOrderDetails pulls detailed information for a list of order IDs.
 	GetOrderDetails(accessToken, shopID string, orderSNs []string) ([]ShopeeOrderDetail, error)
 
-	// PullProducts pulls products/listings from the marketplace. Not implemented in Sprint 13.
-	PullProducts() error
+	// PullProducts pulls products/listings from the marketplace.
+	PullProducts(accessToken, shopID string, offset int, pageSize int, itemStatus string) (*ShopeeProductListResponse, error)
 
-	// PushStock pushes inventory stock levels to the marketplace. Not implemented in Sprint 13.
+	// GetProductDetails pulls detailed information for a list of product IDs.
+	GetProductDetails(accessToken, shopID string, itemIDList []int64) ([]ShopeeProductDetail, error)
+
+	// PushStock pushes inventory stock levels to the marketplace. Not implemented yet.
 	PushStock() error
 }
 

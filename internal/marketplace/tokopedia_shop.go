@@ -48,13 +48,16 @@ func (a *TokopediaShopAdapter) GetOrderDetails(accessToken, shopID string, order
 }
 
 // PullProducts pulls products from Tokopedia Shop.
-// Sprint 13: Returns ErrNotImplemented.
-func (a *TokopediaShopAdapter) PullProducts() error {
-	return ErrNotImplemented
+func (a *TokopediaShopAdapter) PullProducts(accessToken, shopID string, offset int, pageSize int, itemStatus string) (*ShopeeProductListResponse, error) {
+	return nil, ErrNotImplemented
+}
+
+// GetProductDetails pulls detailed information for a list of product IDs.
+func (a *TokopediaShopAdapter) GetProductDetails(accessToken, shopID string, itemIDList []int64) ([]ShopeeProductDetail, error) {
+	return nil, ErrNotImplemented
 }
 
 // PushStock pushes stock levels to Tokopedia Shop.
-// Sprint 13: Returns ErrNotImplemented.
 func (a *TokopediaShopAdapter) PushStock() error {
 	return ErrNotImplemented
 }

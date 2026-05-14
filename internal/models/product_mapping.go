@@ -33,6 +33,24 @@ type MarketplaceProductMapping struct {
 	Store          *Store          `gorm:"foreignKey:StoreID" json:"store,omitempty"`
 }
 
+type ShopeeMappingCandidate struct {
+	ExternalProductID        string  `json:"external_product_id"`
+	ExternalVariantID        *string `json:"external_variant_id"`
+	Marketplace              string  `json:"marketplace"`
+	StoreID                  string  `json:"store_id"`
+	Title                    string  `json:"title"`
+	SKU                      string  `json:"sku"`
+	VariantName              string  `json:"variant_name"`
+	Price                    float64 `json:"price"`
+	Stock                    int     `json:"stock"`
+	ImageURL                 string  `json:"image_url"`
+	MappingStatus            string  `json:"mapping_status"` // unmapped, mapped, partially_mapped
+	ExistingProductMappingID *string `json:"existing_product_mapping_id"`
+	InternalProductID        *string `json:"internal_product_id"`
+	InternalProductName      *string `json:"internal_product_name"`
+	InternalVariantID        *string `json:"internal_variant_id"`
+}
+
 func (MarketplaceProductMapping) TableName() string {
 	return "marketplace_product_mappings"
 }

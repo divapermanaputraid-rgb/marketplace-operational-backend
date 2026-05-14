@@ -24,6 +24,7 @@ type IntegrationHandler struct {
 	orderRepo       *repositories.OrderRepository
 	mappingRepo     *repositories.ProductMappingRepository
 	syncRepo        *repositories.SyncRepository
+	productRepo     *repositories.ProductRepository
 }
 
 func NewIntegrationHandler(
@@ -32,6 +33,7 @@ func NewIntegrationHandler(
 	orderRepo *repositories.OrderRepository,
 	mappingRepo *repositories.ProductMappingRepository,
 	syncRepo *repositories.SyncRepository,
+	productRepo *repositories.ProductRepository,
 ) *IntegrationHandler {
 	return &IntegrationHandler{
 		integrationRepo: integrationRepo,
@@ -39,6 +41,7 @@ func NewIntegrationHandler(
 		orderRepo:       orderRepo,
 		mappingRepo:     mappingRepo,
 		syncRepo:        syncRepo,
+		productRepo:     productRepo,
 	}
 }
 
@@ -645,6 +648,225 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 
 }
 
+// PullProducts manually pulls products for a marketplace integration.
+// POST /api/stores/:id/integration/products/pull
+func (h *IntegrationHandler) PullProducts(c *gin.Context) {
+	startTime := time.Now()
+	storeID := c.Param("id")
+
+	var req struct {
+		Offset     int    `json:"offset"`
+		PageSize   int    `json:"page_size"`
+		ItemStatus string `json:"item_status"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_REQUEST", "Invalid request body"))
+		return
+	}
+
+	store, err := h.storeRepo.FindByID(storeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
+		return
+	}
+
+	adapter, err := marketplace.GetAdapter(store.Marketplace)
+	if err != nil {
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":  "unsupported",
+			"message": "This marketplace is not supported.",
+		}, "Marketplace not supported"))
+		return
+	}
+
+	// Only Shopee supported for products in this sprint
+	if store.Marketplace != "shopee" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Product pull is currently only supported for Shopee"))
+		return
+	}
+
+	credErr := adapter.ValidateCredentials()
+	if credErr != nil {
+		status := "not_configured"
+		msg := "Marketplace API credentials are not configured in backend environment."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "products",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":            status,
+			"message":           msg,
+			"records_processed": 0,
+			"products_count":    0,
+		}, msg))
+		return
+	}
+
+	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
+	if cred == nil {
+		status := "not_configured"
+		msg := "No credentials configured for this marketplace."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "products",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":            status,
+			"message":           msg,
+			"records_processed": 0,
+			"products_count":    0,
+		}, msg))
+		return
+	}
+
+	// Validate token expiration
+	if cred.AccessTokenExpiresAt != nil && time.Now().After(*cred.AccessTokenExpiresAt) {
+		cred.ConnectionStatus = "expired"
+		errStr := "Access token has expired."
+		cred.LastError = &errStr
+		_ = h.integrationRepo.UpdateCredential(cred)
+
+		status := "expired"
+		msg := "Access token expired. Please reconnect."
+
+		// Create SyncLog for audit
+		durationMs := int64(time.Since(startTime).Milliseconds())
+		now := time.Now()
+		logRec := &models.SyncLog{
+			StoreID:       &store.ID,
+			Marketplace:   store.Marketplace,
+			SyncType:      "products",
+			SyncDirection: "pull",
+			Status:        status,
+			Message:       &msg,
+			StartedAt:     &startTime,
+			FinishedAt:    &now,
+			DurationMs:    &durationMs,
+		}
+		_ = h.syncRepo.CreateSyncLog(logRec)
+
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":            status,
+			"message":           msg,
+			"records_processed": 0,
+			"products_count":    0,
+		}, msg))
+		return
+	}
+
+	if cred.EncryptedAccessToken == nil || *cred.EncryptedAccessToken == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_MISSING", "Access token is missing."))
+		return
+	}
+
+	accessToken, err := security.DecryptToken(*cred.EncryptedAccessToken)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("DECRYPTION_FAILED", "Failed to decrypt token"))
+		return
+	}
+
+	extStoreID := ""
+	if store.ExternalStoreID != nil {
+		extStoreID = *store.ExternalStoreID
+	}
+
+	// 1. Pull product list (IDs)
+	listRes, err := adapter.PullProducts(accessToken, extStoreID, req.Offset, req.PageSize, req.ItemStatus)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull product list: "+err.Error()))
+		return
+	}
+
+	// 2. Pull details for the items
+	var itemIDs []int64
+	for _, item := range listRes.Items {
+		itemIDs = append(itemIDs, item.ItemID)
+	}
+
+	var products []marketplace.ShopeeProductDetail
+	if len(itemIDs) > 0 {
+		products, err = adapter.GetProductDetails(accessToken, extStoreID, itemIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull product details: "+err.Error()))
+			return
+		}
+	}
+
+	// Sprint 22A: Do not persist to internal database yet.
+	// We just return a safe preview of the pulled products.
+
+	statusMsg := "Products pulled successfully (Preview only)."
+	finalStatus := "success"
+
+	// Create SyncLog
+	durationMs := int64(time.Since(startTime).Milliseconds())
+	now := time.Now()
+	msg := statusMsg
+
+	// Prepare raw summary without secrets
+	summary := gin.H{
+		"records_processed": len(products),
+		"has_next_page":     listRes.HasNextPage,
+		"next_offset":       listRes.NextOffset,
+		"product_ids":       itemIDs,
+	}
+	summaryJSON, _ := json.Marshal(summary)
+	summaryStr := string(summaryJSON)
+
+	logRec := &models.SyncLog{
+		StoreID:          &store.ID,
+		Marketplace:      store.Marketplace,
+		SyncType:         "products",
+		SyncDirection:    "pull",
+		Status:           finalStatus,
+		Message:          &msg,
+		RecordsProcessed: len(products),
+		StartedAt:        &startTime,
+		FinishedAt:       &now,
+		DurationMs:       &durationMs,
+		RawSummary:       &summaryStr,
+	}
+	_ = h.syncRepo.CreateSyncLog(logRec)
+
+	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+		"status":            finalStatus,
+		"message":           statusMsg,
+		"records_processed": len(products),
+		"products_count":    len(products),
+		"has_next_page":     listRes.HasNextPage,
+		"next_offset":       listRes.NextOffset,
+		"products":          products, // Safe product detail list
+		"sync_log_id":       logRec.ID,
+	}, statusMsg))
+}
+
 // TestConnection tests the connection status for a store's marketplace integration.
 // POST /api/stores/:id/integration/test
 func (h *IntegrationHandler) TestConnection(c *gin.Context) {
@@ -805,4 +1027,303 @@ func (h *IntegrationHandler) ListSupportedMarketplaces(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, models.SuccessResponse(marketplaces, ""))
+}
+
+// PreviewMappingCandidates pulls products and identifies mapping status.
+// POST /api/stores/:id/integration/products/mapping-candidates
+func (h *IntegrationHandler) PreviewMappingCandidates(c *gin.Context) {
+	startTime := time.Now()
+	storeID := c.Param("id")
+
+	store, err := h.storeRepo.FindByID(storeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
+		return
+	}
+
+	adapter, err := marketplace.GetAdapter(store.Marketplace)
+	if err != nil || store.Marketplace != "shopee" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("UNSUPPORTED_MARKETPLACE", "Mapping candidates currently only supported for Shopee"))
+		return
+	}
+
+	credErr := adapter.ValidateCredentials()
+	if credErr != nil {
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":            "not_configured",
+			"message":           "Marketplace API credentials not configured.",
+			"records_processed": 0,
+		}, "Credentials not configured"))
+		return
+	}
+
+	cred, _ := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, store.Marketplace)
+	if cred == nil || (cred.AccessTokenExpiresAt != nil && time.Now().After(*cred.AccessTokenExpiresAt)) {
+		status := "not_configured"
+		if cred != nil {
+			status = "expired"
+		}
+		c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+			"status":            status,
+			"message":           "Connection expired or not configured.",
+			"records_processed": 0,
+		}, "Connection issue"))
+		return
+	}
+
+	accessToken, _ := security.DecryptToken(*cred.EncryptedAccessToken)
+	extStoreID := ""
+	if store.ExternalStoreID != nil {
+		extStoreID = *store.ExternalStoreID
+	}
+
+	// 1. Pull product list (IDs)
+	listRes, err := adapter.PullProducts(accessToken, extStoreID, 0, 50, "NORMAL")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull product list: "+err.Error()))
+		return
+	}
+
+	// 2. Pull details
+	var itemIDs []int64
+	for _, item := range listRes.Items {
+		itemIDs = append(itemIDs, item.ItemID)
+	}
+
+	var products []marketplace.ShopeeProductDetail
+	if len(itemIDs) > 0 {
+		products, err = adapter.GetProductDetails(accessToken, extStoreID, itemIDs)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull product details: "+err.Error()))
+			return
+		}
+	}
+
+	// 3. Process into candidates
+	var candidates []models.ShopeeMappingCandidate
+	var mappedCount, unmappedCount int
+
+	for _, p := range products {
+		// Handle models (variants)
+		if len(p.Models) > 0 {
+			for _, m := range p.Models {
+				extProdID := fmt.Sprintf("%d", p.ItemID)
+				extVarID := fmt.Sprintf("%d", m.ModelID)
+
+				candidate := h.buildCandidate(store, p, &m, extProdID, &extVarID)
+				candidates = append(candidates, candidate)
+
+				if candidate.MappingStatus == "mapped" {
+					mappedCount++
+				} else {
+					unmappedCount++
+				}
+			}
+		} else {
+			// Single product without variants
+			extProdID := fmt.Sprintf("%d", p.ItemID)
+			candidate := h.buildCandidate(store, p, nil, extProdID, nil)
+			candidates = append(candidates, candidate)
+
+			if candidate.MappingStatus == "mapped" {
+				mappedCount++
+			} else {
+				unmappedCount++
+			}
+		}
+	}
+
+	// Create SyncLog
+	durationMs := int64(time.Since(startTime).Milliseconds())
+	now := time.Now()
+	finalStatus := "success"
+	statusMsg := "Mapping candidates retrieved successfully."
+
+	summary := gin.H{
+		"records_processed": len(candidates),
+		"mapped_count":      mappedCount,
+		"unmapped_count":    unmappedCount,
+	}
+	summaryJSON, _ := json.Marshal(summary)
+	summaryStr := string(summaryJSON)
+
+	logRec := &models.SyncLog{
+		StoreID:          &store.ID,
+		Marketplace:      store.Marketplace,
+		SyncType:         "products",
+		SyncDirection:    "pull",
+		Status:           finalStatus,
+		Message:          &statusMsg,
+		RecordsProcessed: len(candidates),
+		StartedAt:        &startTime,
+		FinishedAt:       &now,
+		DurationMs:       &durationMs,
+		RawSummary:       &summaryStr,
+	}
+	_ = h.syncRepo.CreateSyncLog(logRec)
+
+	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+		"status":            finalStatus,
+		"message":           statusMsg,
+		"records_processed": len(candidates),
+		"mapped_count":      mappedCount,
+		"unmapped_count":    unmappedCount,
+		"candidates":        candidates,
+		"sync_log_id":       logRec.ID,
+	}, statusMsg))
+}
+
+func (h *IntegrationHandler) buildCandidate(store *models.Store, p marketplace.ShopeeProductDetail, m *marketplace.ShopeeProductVariant, extProdID string, extVarID *string) models.ShopeeMappingCandidate {
+	candidate := models.ShopeeMappingCandidate{
+		ExternalProductID: extProdID,
+		ExternalVariantID: extVarID,
+		Marketplace:       "shopee",
+		StoreID:           store.ID.String(),
+		Title:             p.ItemName,
+		MappingStatus:     "unmapped",
+	}
+
+	if m != nil {
+		candidate.VariantName = m.ModelName
+		candidate.SKU = m.ModelSKU
+		if len(m.PriceInfo) > 0 {
+			candidate.Price = m.PriceInfo[0].OriginalPrice
+		}
+		if len(m.StockInfo) > 0 {
+			candidate.Stock = m.StockInfo[0].TotalAvailable
+		}
+	} else {
+		candidate.SKU = p.ItemSKU
+		if len(p.PriceInfo) > 0 {
+			candidate.Price = p.PriceInfo[0].OriginalPrice
+		}
+		if len(p.StockInfo) > 0 {
+			candidate.Stock = p.StockInfo[0].TotalAvailable
+		}
+	}
+
+	if len(p.Images.ImageUrlList) > 0 {
+		candidate.ImageURL = p.Images.ImageUrlList[0]
+	}
+
+	// Check existing mapping
+	var vID string
+	if extVarID != nil {
+		vID = *extVarID
+	}
+	existing, _ := h.mappingRepo.FindByExternalID(store.ID.String(), extProdID, vID)
+	if existing != nil {
+		candidate.MappingStatus = "mapped"
+		idStr := existing.ID.String()
+		candidate.ExistingProductMappingID = &idStr
+		prodIDStr := existing.ProductID.String()
+		candidate.InternalProductID = &prodIDStr
+
+		if existing.Product != nil {
+			candidate.InternalProductName = &existing.Product.Name
+		}
+		if existing.ProductVariantID != nil {
+			vIDStr := existing.ProductVariantID.String()
+			candidate.InternalVariantID = &vIDStr
+		}
+	}
+
+	return candidate
+}
+
+// CreateMapping creates a manual mapping from a Shopee candidate.
+// POST /api/stores/:id/integration/products/mappings
+func (h *IntegrationHandler) CreateMapping(c *gin.Context) {
+	storeID := c.Param("id")
+
+	var req struct {
+		ExternalProductID string  `json:"external_product_id" binding:"required"`
+		ExternalVariantID *string `json:"external_variant_id"`
+		InternalProductID string  `json:"internal_product_id" binding:"required"`
+		InternalVariantID *string `json:"internal_variant_id"`
+		ExternalSKU       *string `json:"external_sku"`
+		ExternalName      *string `json:"external_name"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+
+	store, err := h.storeRepo.FindByID(storeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
+		return
+	}
+
+	if store.Marketplace != "shopee" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Manual mapping currently only supported for Shopee"))
+		return
+	}
+
+	// Validate internal product
+	product, err := h.productRepo.FindByID(req.InternalProductID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_PRODUCT", "Internal product not found"))
+		return
+	}
+
+	// Validate variant if provided
+	var internalVariantID *uuid.UUID
+	if req.InternalVariantID != nil && *req.InternalVariantID != "" {
+		vUUID, err := uuid.Parse(*req.InternalVariantID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_VARIANT", "Invalid internal variant ID"))
+			return
+		}
+
+		found := false
+		for _, v := range product.Variants {
+			if v.ID == vUUID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_VARIANT", "Variant not found for this product"))
+			return
+		}
+		internalVariantID = &vUUID
+	}
+
+	// Check duplicate mapping
+	extVarID := ""
+	if req.ExternalVariantID != nil {
+		extVarID = *req.ExternalVariantID
+	}
+	exists, err := h.mappingRepo.CheckDuplicateMapping(storeID, req.ExternalProductID, extVarID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to check existing mapping"))
+		return
+	}
+	if exists {
+		c.JSON(http.StatusConflict, models.ErrorResponse("DUPLICATE_MAPPING", "This external item is already mapped for this store"))
+		return
+	}
+
+	// Create mapping
+	mapping := &models.MarketplaceProductMapping{
+		ID:                uuid.New(),
+		ProductID:         product.ID,
+		ProductVariantID:  internalVariantID,
+		StoreID:           store.ID,
+		Marketplace:       "shopee",
+		ExternalProductID: req.ExternalProductID,
+		ExternalVariantID: req.ExternalVariantID,
+		ExternalSKU:       req.ExternalSKU,
+		ListingName:       req.ExternalName,
+		ListingStatus:     "active", // Assume active if mapping manually
+	}
+
+	if err := h.mappingRepo.Create(mapping); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to create mapping"))
+		return
+	}
+
+	c.JSON(http.StatusCreated, models.SuccessResponse(mapping, "Mapping created successfully"))
 }

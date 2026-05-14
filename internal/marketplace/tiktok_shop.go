@@ -47,13 +47,16 @@ func (a *TikTokShopAdapter) GetOrderDetails(accessToken, shopID string, orderSNs
 }
 
 // PullProducts pulls products from TikTok Shop.
-// Sprint 13: Returns ErrNotImplemented.
-func (a *TikTokShopAdapter) PullProducts() error {
-	return ErrNotImplemented
+func (a *TikTokShopAdapter) PullProducts(accessToken, shopID string, offset int, pageSize int, itemStatus string) (*ShopeeProductListResponse, error) {
+	return nil, ErrNotImplemented
+}
+
+// GetProductDetails pulls detailed information for a list of product IDs.
+func (a *TikTokShopAdapter) GetProductDetails(accessToken, shopID string, itemIDList []int64) ([]ShopeeProductDetail, error) {
+	return nil, ErrNotImplemented
 }
 
 // PushStock pushes stock levels to TikTok Shop.
-// Sprint 13: Returns ErrNotImplemented.
 func (a *TikTokShopAdapter) PushStock() error {
 	return ErrNotImplemented
 }

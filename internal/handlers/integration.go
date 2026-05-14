@@ -714,6 +714,11 @@ func (h *IntegrationHandler) PullProducts(c *gin.Context) {
 		return
 	}
 
+	// Hardening: clamp page size
+	if req.PageSize <= 0 || req.PageSize > 50 {
+		req.PageSize = 50
+	}
+
 	store, err := h.storeRepo.FindByID(storeID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
@@ -882,6 +887,9 @@ func (h *IntegrationHandler) PullProducts(c *gin.Context) {
 	// Prepare raw summary without secrets
 	summary := gin.H{
 		"records_processed": len(products),
+		"offset":            req.Offset,
+		"page_size":         req.PageSize,
+		"item_status":       req.ItemStatus,
 		"has_next_page":     listRes.HasNextPage,
 		"next_offset":       listRes.NextOffset,
 		"product_ids":       itemIDs,
@@ -1084,6 +1092,26 @@ func (h *IntegrationHandler) PreviewMappingCandidates(c *gin.Context) {
 	startTime := time.Now()
 	storeID := c.Param("id")
 
+	var req struct {
+		Offset     int    `json:"offset"`
+		PageSize   int    `json:"page_size"`
+		ItemStatus string `json:"item_status"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		// If JSON is missing or invalid, we continue with defaults for backward compatibility
+		req.PageSize = 20
+		req.ItemStatus = "NORMAL"
+	}
+
+	// Hardening: clamp page size
+	if req.PageSize <= 0 || req.PageSize > 50 {
+		req.PageSize = 20
+	}
+	if req.ItemStatus == "" {
+		req.ItemStatus = "NORMAL"
+	}
+
 	store, err := h.storeRepo.FindByID(storeID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
@@ -1126,8 +1154,8 @@ func (h *IntegrationHandler) PreviewMappingCandidates(c *gin.Context) {
 		extStoreID = *store.ExternalStoreID
 	}
 
-	// 1. Pull product list (IDs)
-	listRes, err := adapter.PullProducts(accessToken, extStoreID, 0, 50, "NORMAL")
+	// 1. Pull product list (IDs) using pagination
+	listRes, err := adapter.PullProducts(accessToken, extStoreID, req.Offset, req.PageSize, req.ItemStatus)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse("API_ERROR", "Failed to pull product list: "+err.Error()))
 		return
@@ -1192,6 +1220,10 @@ func (h *IntegrationHandler) PreviewMappingCandidates(c *gin.Context) {
 		"records_processed": len(candidates),
 		"mapped_count":      mappedCount,
 		"unmapped_count":    unmappedCount,
+		"offset":            req.Offset,
+		"page_size":         req.PageSize,
+		"has_next_page":     listRes.HasNextPage,
+		"next_offset":       listRes.NextOffset,
 	}
 	summaryJSON, _ := json.Marshal(summary)
 	summaryStr := string(summaryJSON)
@@ -1218,6 +1250,8 @@ func (h *IntegrationHandler) PreviewMappingCandidates(c *gin.Context) {
 		"mapped_count":      mappedCount,
 		"unmapped_count":    unmappedCount,
 		"candidates":        candidates,
+		"has_next_page":     listRes.HasNextPage,
+		"next_offset":       listRes.NextOffset,
 		"sync_log_id":       logRec.ID,
 	}, statusMsg))
 }

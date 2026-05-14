@@ -482,53 +482,67 @@ func (a *ShopeeAdapter) GetProductDetails(accessToken, shopID string, itemIDList
 		return nil, err
 	}
 
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	path := "/api/v2/product/get_item_base_info"
-	baseString := BuildAPIBaseString(cfg.PartnerID, path, timestamp, accessToken, shopID)
-	sign := GenerateShopeeSignature(cfg.PartnerKey, baseString)
+	var allProducts []ShopeeProductDetail
+	batchSize := 50 // Shopee limit is 50 per request for get_item_base_info
 
-	// Combine IDs
-	idList := ""
-	for i, id := range itemIDList {
-		if i > 0 {
-			idList += ","
+	for i := 0; i < len(itemIDList); i += batchSize {
+		end := i + batchSize
+		if end > len(itemIDList) {
+			end = len(itemIDList)
 		}
-		idList += fmt.Sprintf("%d", id)
+		batch := itemIDList[i:end]
+
+		timestamp := fmt.Sprintf("%d", time.Now().Unix())
+		path := "/api/v2/product/get_item_base_info"
+		baseString := BuildAPIBaseString(cfg.PartnerID, path, timestamp, accessToken, shopID)
+		sign := GenerateShopeeSignature(cfg.PartnerKey, baseString)
+
+		// Combine IDs
+		idList := ""
+		for j, id := range batch {
+			if j > 0 {
+				idList += ","
+			}
+			idList += fmt.Sprintf("%d", id)
+		}
+
+		url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s&item_id_list=%s",
+			cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign, idList)
+
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return allProducts, err
+		}
+
+		client := &http.Client{Timeout: 15 * time.Second}
+		res, err := client.Do(req)
+		if err != nil {
+			return allProducts, err
+		}
+
+		type shopeeProductDetailResponse struct {
+			Error    string `json:"error"`
+			Message  string `json:"message"`
+			Response struct {
+				ItemList []ShopeeProductDetail `json:"item_list"`
+			} `json:"response"`
+		}
+
+		var detailRes shopeeProductDetailResponse
+		if err := json.NewDecoder(res.Body).Decode(&detailRes); err != nil {
+			res.Body.Close()
+			return allProducts, err
+		}
+		res.Body.Close()
+
+		if detailRes.Error != "" {
+			return allProducts, fmt.Errorf("shopee api error in batch: %s - %s", detailRes.Error, detailRes.Message)
+		}
+
+		allProducts = append(allProducts, detailRes.Response.ItemList...)
 	}
 
-	url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s&item_id_list=%s",
-		cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign, idList)
-
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	type shopeeProductDetailResponse struct {
-		Error    string `json:"error"`
-		Message  string `json:"message"`
-		Response struct {
-			ItemList []ShopeeProductDetail `json:"item_list"`
-		} `json:"response"`
-	}
-
-	var detailRes shopeeProductDetailResponse
-	if err := json.NewDecoder(res.Body).Decode(&detailRes); err != nil {
-		return nil, err
-	}
-
-	if detailRes.Error != "" {
-		return nil, fmt.Errorf("shopee api error: %s - %s", detailRes.Error, detailRes.Message)
-	}
-
-	return detailRes.Response.ItemList, nil
+	return allProducts, nil
 }
 
 // PushStock pushes stock levels to Shopee.

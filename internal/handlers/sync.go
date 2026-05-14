@@ -2,23 +2,29 @@ package handlers
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/marketplace-ops/backend/internal/models"
 	"github.com/marketplace-ops/backend/internal/repositories"
+	"github.com/marketplace-ops/backend/internal/services"
 )
 
 type SyncHandler struct {
-	syncRepo  *repositories.SyncRepository
-	storeRepo *repositories.StoreRepository
+	syncRepo    *repositories.SyncRepository
+	storeRepo   *repositories.StoreRepository
+	syncService *services.SyncExecutionService
 }
 
-func NewSyncHandler(syncRepo *repositories.SyncRepository, storeRepo *repositories.StoreRepository) *SyncHandler {
+func NewSyncHandler(
+	syncRepo *repositories.SyncRepository,
+	storeRepo *repositories.StoreRepository,
+	syncService *services.SyncExecutionService,
+) *SyncHandler {
 	return &SyncHandler{
-		syncRepo:  syncRepo,
-		storeRepo: storeRepo,
+		syncRepo:    syncRepo,
+		storeRepo:   storeRepo,
+		syncService: syncService,
 	}
 }
 
@@ -176,49 +182,36 @@ func (h *SyncHandler) DeleteJob(c *gin.Context) {
 
 func (h *SyncHandler) RunJob(c *gin.Context) {
 	id := c.Param("id")
-
 	job, err := h.syncRepo.GetSyncJobByID(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", err.Error()))
 		return
 	}
 
-	// Update job status to running initially (simulating real run)
-	now := time.Now()
-	job.LastRunAt = &now
-	job.Status = "running"
-	_ = h.syncRepo.UpdateSyncJob(job)
+	// Execute job using service
+	syncLog, err := h.syncService.ExecuteJob(job)
 
-	// In Sprint 8, we do not have real API integrations.
-	// We simulate a skipped/not_configured run immediately.
-	statusMsg := "Marketplace API integration is not configured yet. Sync was skipped."
-	finalStatus := "not_configured"
-
-	// Create SyncLog
-	durationMs := int64(time.Since(now).Milliseconds())
-	log := &models.SyncLog{
-		SyncJobID:     &job.ID,
-		StoreID:       job.StoreID,
-		Marketplace:   job.Marketplace,
-		SyncType:      job.SyncType,
-		SyncDirection: job.SyncDirection,
-		Status:        finalStatus,
-		Message:       &statusMsg,
-		StartedAt:     &now,
-		FinishedAt:    &now,
-		DurationMs:    &durationMs,
-	}
-
-	_ = h.syncRepo.CreateSyncLog(log)
-
-	// Finalize Job status
-	job.Status = finalStatus
-	_ = h.syncRepo.UpdateSyncJob(job)
-
-	// Re-fetch job to include related data if any
+	// Fetch updated job to show latest status/run info
 	updatedJob, _ := h.syncRepo.GetSyncJobByID(id)
 
-	c.JSON(http.StatusOK, models.SuccessResponse(updatedJob, statusMsg))
+	response := gin.H{
+		"job":               updatedJob,
+		"sync_log_id":       syncLog.ID,
+		"status":            syncLog.Status,
+		"records_processed": syncLog.RecordsProcessed,
+		"records_created":   syncLog.RecordsCreated,
+		"records_updated":   syncLog.RecordsUpdated,
+		"records_failed":    syncLog.RecordsFailed,
+	}
+
+	if syncLog.Message != nil {
+		response["message"] = *syncLog.Message
+	}
+	if syncLog.ErrorMessage != nil {
+		response["error"] = *syncLog.ErrorMessage
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(response, "Sync job execution completed"))
 }
 
 func (h *SyncHandler) ListLogs(c *gin.Context) {

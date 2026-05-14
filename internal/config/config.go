@@ -3,6 +3,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -25,6 +26,10 @@ type Config struct {
 	SupabaseStorageURL     string
 	SupabaseStorageBucket  string
 	SupabaseServiceRoleKey string
+
+	// Sync Worker
+	SyncWorkerEnabled  bool
+	SyncWorkerInterval int
 }
 
 // Load reads environment variables and returns a Config struct.
@@ -55,6 +60,8 @@ func Load() *Config {
 		SupabaseStorageURL:     getEnv("SUPABASE_STORAGE_URL", ""),
 		SupabaseStorageBucket:  getEnv("SUPABASE_STORAGE_BUCKET", "product-images"),
 		SupabaseServiceRoleKey: getEnv("SUPABASE_SERVICE_ROLE_KEY", ""),
+		SyncWorkerEnabled:      getEnv("SYNC_WORKER_ENABLED", "false") == "true",
+		SyncWorkerInterval:     getEnvInt("SYNC_WORKER_INTERVAL_SECONDS", 300),
 	}
 
 	// Parse CORS origins
@@ -111,4 +118,16 @@ func parseCORSOrigins(raw string) []string {
 		}
 	}
 	return result
+}
+
+func getEnvInt(key string, fallback int) int {
+	valStr := getEnv(key, "")
+	if valStr == "" {
+		return fallback
+	}
+	val, err := strconv.Atoi(valStr)
+	if err != nil {
+		return fallback
+	}
+	return val
 }

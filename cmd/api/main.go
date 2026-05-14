@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/gin-gonic/gin"
@@ -10,6 +11,7 @@ import (
 	"github.com/marketplace-ops/backend/internal/middleware"
 	"github.com/marketplace-ops/backend/internal/repositories"
 	"github.com/marketplace-ops/backend/internal/services"
+	"github.com/marketplace-ops/backend/internal/workers"
 )
 
 func main() {
@@ -42,6 +44,11 @@ func main() {
 
 	jwtService := services.NewJWTService(cfg.JWTSecret)
 	reservationService := services.NewInventoryReservationService(inventoryRepo, orderRepo)
+	syncExecutionService := services.NewSyncExecutionService(syncRepo, storeRepo, integrationRepo, orderRepo, productMappingRepo, productRepo)
+
+	// Workers
+	syncWorker := workers.NewSyncWorker(syncRepo, syncExecutionService, cfg.SyncWorkerInterval, cfg.SyncWorkerEnabled)
+	go syncWorker.Start(context.Background())
 
 	// Handlers
 	healthHandler := handlers.NewHealthHandler()
@@ -51,7 +58,7 @@ func main() {
 	productMappingHandler := handlers.NewProductMappingHandler(productMappingRepo, productRepo, storeRepo)
 	inventoryHandler := handlers.NewInventoryHandler(inventoryRepo, productRepo, productMappingRepo)
 	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo, reservationService)
-	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo)
+	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo, syncExecutionService)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
 	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo, orderRepo, productMappingRepo, syncRepo, productRepo, inventoryRepo)
 

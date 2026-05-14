@@ -1436,6 +1436,7 @@ type PushStockResponse struct {
 // PushStock manually pushes internal stock to the marketplace.
 // POST /api/stores/:id/integration/stock/push
 func (h *IntegrationHandler) PushStock(c *gin.Context) {
+	startTime := time.Now()
 	storeID := c.Param("id")
 	var req PushStockRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1466,9 +1467,15 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		return
 	}
 
+	// Validate external ID exists
+	if mapping.ExternalProductID == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_MAPPING", "Mapping missing external product ID"))
+		return
+	}
+
 	// Get inventory item
 	var inventoryItem *models.InventoryItem
-	if mapping.ProductVariantID != nil {
+	if mapping.ProductVariantID != nil && mapping.ProductVariantID.String() != "" {
 		inventoryItem, err = h.inventoryRepo.GetByProductAndVariant(mapping.ProductID.String(), mapping.ProductVariantID.String(), "Main Warehouse")
 	} else {
 		inventoryItem, err = h.inventoryRepo.GetByProductAndVariant(mapping.ProductID.String(), "", "Main Warehouse")
@@ -1479,24 +1486,21 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		return
 	}
 
+	// Source of truth: available_quantity (never reserved_quantity)
 	quantity := inventoryItem.AvailableQuantity
 	if req.Quantity != nil {
+		if *req.Quantity < 0 {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_QUANTITY", "Cannot push negative stock"))
+			return
+		}
+		// Hardening: clamp to available if they try to push more than we have?
+		// Actually, manual push might want to override, but prompt says "reserved_quantity is never pushed".
+		// available_quantity already excludes reserved. So we just ensure we don't exceed available if we want to be strict.
+		// For now, let's allow manual override but default to available.
 		quantity = *req.Quantity
 	}
 
-	if quantity < 0 {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_QUANTITY", "Cannot push negative stock"))
-		return
-	}
-
-	// Prepare result
-	extProdID, _ := strconv.ParseInt(mapping.ExternalProductID, 10, 64)
-	extVarID := int64(0)
-	if mapping.ExternalVariantID != nil && *mapping.ExternalVariantID != "" {
-		extVarID, _ = strconv.ParseInt(*mapping.ExternalVariantID, 10, 64)
-	}
-
-	startTime := time.Now()
+	// Prepare SyncLog (started state)
 	syncLog := &models.SyncLog{
 		ID:            uuid.New(),
 		StoreID:       &store.ID,
@@ -1507,6 +1511,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		StartedAt:     &startTime,
 	}
 
+	// Setup base response
 	response := PushStockResponse{
 		Marketplace:       "shopee",
 		StoreID:           store.ID.String(),
@@ -1520,47 +1525,98 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		response.ExternalVariantID = *mapping.ExternalVariantID
 	}
 
+	// Prepare raw summary without secrets
+	summary := gin.H{
+		"store_id":            store.ID.String(),
+		"product_mapping_id":  mapping.ID.String(),
+		"external_product_id": mapping.ExternalProductID,
+		"external_variant_id": response.ExternalVariantID,
+		"pushed_quantity":     quantity,
+		"dry_run":             req.DryRun,
+		"internal_sku":        mapping.ExternalSKU,
+	}
+
 	if req.DryRun {
 		now := time.Now()
-		syncLog.Status = "success"
+		durationMs := int64(now.Sub(startTime).Milliseconds())
+
+		syncLog.Status = "dry_run"
 		syncLog.FinishedAt = &now
+		syncLog.DurationMs = &durationMs
 		syncLog.RecordsProcessed = 1
 		msg := fmt.Sprintf("Dry run: Would push %d to Shopee item %s", quantity, mapping.ExternalProductID)
 		syncLog.Message = &msg
-		h.syncRepo.CreateSyncLog(syncLog)
+
+		summaryJSON, _ := json.Marshal(summary)
+		summaryStr := string(summaryJSON)
+		syncLog.RawSummary = &summaryStr
+
+		_ = h.syncRepo.CreateSyncLog(syncLog)
 
 		response.Status = "success"
-		response.Message = "Dry run successful"
+		response.Message = "Dry run successful. No changes made to Shopee."
 		response.SyncLogID = syncLog.ID.String()
 		c.JSON(http.StatusOK, response)
 		return
 	}
 
-	// Real push
+	// Real push: Credential Validation
 	adapter, err := marketplace.GetAdapter("shopee")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to get adapter"))
 		return
 	}
 
-	creds, err := h.integrationRepo.FindCredentialByStoreID(storeID)
+	creds, err := h.integrationRepo.FindCredentialByStoreAndMarketplace(storeID, "shopee")
 	if err != nil || creds == nil {
 		now := time.Now()
+		durationMs := int64(now.Sub(startTime).Milliseconds())
+
 		syncLog.Status = "not_configured"
 		syncLog.FinishedAt = &now
+		syncLog.DurationMs = &durationMs
 		syncLog.RecordsFailed = 1
 		msg := "Marketplace credentials not configured"
 		syncLog.Message = &msg
-		h.syncRepo.CreateSyncLog(syncLog)
 
-		response.Status = "failed"
+		summaryJSON, _ := json.Marshal(summary)
+		summaryStr := string(summaryJSON)
+		syncLog.RawSummary = &summaryStr
+
+		_ = h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "not_configured"
 		response.Message = "Marketplace credentials not configured"
 		response.SyncLogID = syncLog.ID.String()
-		c.JSON(http.StatusPreconditionFailed, response)
+		c.JSON(http.StatusOK, response) // Return 200 with status in body as per convention
 		return
 	}
 
-	// Decrypt tokens
+	// Validate token expiration
+	if creds.AccessTokenExpiresAt != nil && time.Now().After(*creds.AccessTokenExpiresAt) {
+		now := time.Now()
+		durationMs := int64(now.Sub(startTime).Milliseconds())
+
+		syncLog.Status = "expired"
+		syncLog.FinishedAt = &now
+		syncLog.DurationMs = &durationMs
+		syncLog.RecordsFailed = 1
+		msg := "Access token expired"
+		syncLog.Message = &msg
+
+		summaryJSON, _ := json.Marshal(summary)
+		summaryStr := string(summaryJSON)
+		syncLog.RawSummary = &summaryStr
+
+		_ = h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "expired"
+		response.Message = "Access token expired. Please reconnect."
+		response.SyncLogID = syncLog.ID.String()
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
 	if creds.EncryptedAccessToken == nil || *creds.EncryptedAccessToken == "" {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_MISSING", "Access token is missing."))
 		return
@@ -1571,31 +1627,11 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		now := time.Now()
 		syncLog.Status = "failed"
 		syncLog.FinishedAt = &now
-		syncLog.RecordsFailed = 1
 		msg := "Failed to decrypt tokens"
 		syncLog.Message = &msg
 		h.syncRepo.CreateSyncLog(syncLog)
 
-		response.Status = "failed"
-		response.Message = "Failed to decrypt credentials"
-		response.SyncLogID = syncLog.ID.String()
-		c.JSON(http.StatusInternalServerError, response)
-		return
-	}
-
-	if creds.AccessTokenExpiresAt != nil && time.Now().After(*creds.AccessTokenExpiresAt) {
-		now := time.Now()
-		syncLog.Status = "expired"
-		syncLog.FinishedAt = &now
-		syncLog.RecordsFailed = 1
-		msg := "Access token expired"
-		syncLog.Message = &msg
-		h.syncRepo.CreateSyncLog(syncLog)
-
-		response.Status = "failed"
-		response.Message = "Access token expired. Please reconnect or refresh."
-		response.SyncLogID = syncLog.ID.String()
-		c.JSON(http.StatusUnauthorized, response)
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("DECRYPTION_FAILED", "Failed to decrypt credentials"))
 		return
 	}
 
@@ -1604,9 +1640,24 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		extStoreID = *store.ExternalStoreID
 	}
 
-	err = adapter.UpdateStock(accessToken, extStoreID, extProdID, extVarID, quantity)
+	extProdIDInt, _ := strconv.ParseInt(mapping.ExternalProductID, 10, 64)
+	extVarIDInt := int64(0)
+	if mapping.ExternalVariantID != nil && *mapping.ExternalVariantID != "" {
+		extVarIDInt, _ = strconv.ParseInt(*mapping.ExternalVariantID, 10, 64)
+	}
+
+	// Real API Call
+	err = adapter.UpdateStock(accessToken, extStoreID, extProdIDInt, extVarIDInt, quantity)
+
 	now := time.Now()
+	durationMs := int64(now.Sub(startTime).Milliseconds())
 	syncLog.FinishedAt = &now
+	syncLog.DurationMs = &durationMs
+
+	summaryJSON, _ := json.Marshal(summary)
+	summaryStr := string(summaryJSON)
+	syncLog.RawSummary = &summaryStr
+
 	if err != nil {
 		syncLog.Status = "failed"
 		syncLog.RecordsFailed = 1
@@ -1614,13 +1665,13 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		syncLog.ErrorMessage = &errMsg
 		msg := fmt.Sprintf("Failed to push stock: %v", err)
 		syncLog.Message = &msg
-		h.syncRepo.CreateSyncLog(syncLog)
+		_ = h.syncRepo.CreateSyncLog(syncLog)
 
 		response.Status = "failed"
 		response.Message = "Failed to push stock to Shopee"
 		response.SyncLogID = syncLog.ID.String()
 		response.Errors = []string{err.Error()}
-		c.JSON(http.StatusBadGateway, response)
+		c.JSON(http.StatusOK, response)
 		return
 	}
 
@@ -1628,7 +1679,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 	syncLog.RecordsProcessed = 1
 	msg := fmt.Sprintf("Successfully pushed %d to Shopee item %s", quantity, mapping.ExternalProductID)
 	syncLog.Message = &msg
-	h.syncRepo.CreateSyncLog(syncLog)
+	_ = h.syncRepo.CreateSyncLog(syncLog)
 
 	response.Status = "success"
 	response.Message = "Stock pushed successfully"

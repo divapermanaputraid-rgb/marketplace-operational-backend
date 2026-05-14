@@ -1469,6 +1469,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		now := time.Now()
 		syncLog.Status = "not_configured"
 		syncLog.FinishedAt = &now
+		syncLog.RecordsFailed = 1
 		msg := "Marketplace credentials not configured"
 		syncLog.Message = &msg
 		h.syncRepo.CreateSyncLog(syncLog)
@@ -1491,6 +1492,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		now := time.Now()
 		syncLog.Status = "failed"
 		syncLog.FinishedAt = &now
+		syncLog.RecordsFailed = 1
 		msg := "Failed to decrypt tokens"
 		syncLog.Message = &msg
 		h.syncRepo.CreateSyncLog(syncLog)
@@ -1506,6 +1508,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 		now := time.Now()
 		syncLog.Status = "expired"
 		syncLog.FinishedAt = &now
+		syncLog.RecordsFailed = 1
 		msg := "Access token expired"
 		syncLog.Message = &msg
 		h.syncRepo.CreateSyncLog(syncLog)
@@ -1527,6 +1530,7 @@ func (h *IntegrationHandler) PushStock(c *gin.Context) {
 	syncLog.FinishedAt = &now
 	if err != nil {
 		syncLog.Status = "failed"
+		syncLog.RecordsFailed = 1
 		errMsg := err.Error()
 		syncLog.ErrorMessage = &errMsg
 		msg := fmt.Sprintf("Failed to push stock: %v", err)

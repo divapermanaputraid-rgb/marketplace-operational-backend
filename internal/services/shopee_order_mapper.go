@@ -41,6 +41,8 @@ func MapShopeeStatusToInternal(status string) string {
 		return "cancelled"
 	case "TO_RETURN":
 		return "returned"
+	case "RETURNED":
+		return "returned"
 	default:
 		return "pending" // Fallback to pending for safety, original kept in raw_payload
 	}

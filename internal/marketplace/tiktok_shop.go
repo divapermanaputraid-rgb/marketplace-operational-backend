@@ -38,7 +38,7 @@ func (a *TikTokShopAdapter) GetShopInfo(accessToken string, shopID string) (*Sho
 
 // PullOrders pulls orders from TikTok Shop.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TikTokShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error) {
+func (a *TikTokShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, pageSize int, cursor string) (*ShopeeOrderListResponse, error) {
 	return nil, ErrNotImplemented
 }
 

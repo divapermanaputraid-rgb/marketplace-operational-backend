@@ -163,7 +163,7 @@ func (s *SyncExecutionService) executePullOrders(job *models.SyncJob, syncLog *m
 	timeTo := time.Now().Unix()
 	timeFrom := timeTo - (24 * 3600)
 
-	listRes, err := adapter.PullOrders(accessToken, extStoreID, timeFrom, timeTo, "")
+	listRes, err := adapter.PullOrders(accessToken, extStoreID, timeFrom, timeTo, 50, "")
 	if err != nil {
 		return err
 	}

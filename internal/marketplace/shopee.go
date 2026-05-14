@@ -219,7 +219,7 @@ func (a *ShopeeAdapter) GetShopInfo(accessToken string, shopID string) (*ShopeeS
 // PullOrders pulls orders from Shopee.
 // Note: This implements a simplified manual pull for Sprint 17.
 // It uses GetOrderList then GetOrderDetail to retrieve full data.
-func (a *ShopeeAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error) {
+func (a *ShopeeAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, pageSize int, cursor string) (*ShopeeOrderListResponse, error) {
 	cfg, err := LoadShopeeConfig()
 	if err != nil {
 		return nil, err
@@ -233,8 +233,12 @@ func (a *ShopeeAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo 
 	url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s",
 		cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign)
 
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+
 	// Add query params for time range. Shopee typically uses time_range_field="create_time" and time_from/time_to.
-	url += fmt.Sprintf("&time_range_field=create_time&time_from=%d&time_to=%d&page_size=50", timeFrom, timeTo)
+	url += fmt.Sprintf("&time_range_field=create_time&time_from=%d&time_to=%d&page_size=%d", timeFrom, timeTo, pageSize)
 	if cursor != "" {
 		url += fmt.Sprintf("&cursor=%s", cursor)
 	}
@@ -244,7 +248,7 @@ func (a *ShopeeAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo 
 		return nil, err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 15 * time.Second}
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -314,84 +318,90 @@ func (a *ShopeeAdapter) GetOrderDetails(accessToken, shopID string, orderSNs []s
 		return nil, err
 	}
 
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	path := "/api/v2/order/get_order_detail"
-	baseString := BuildAPIBaseString(cfg.PartnerID, path, timestamp, accessToken, shopID)
-	sign := GenerateShopeeSignature(cfg.PartnerKey, baseString)
+	var allMappedDetails []ShopeeOrderDetail
+	batchSize := 50 // Shopee limit is 50 per request for get_order_detail
 
-	// Combine SNs
-	snList := ""
-	for i, sn := range orderSNs {
-		if i > 0 {
-			snList += ","
+	for i := 0; i < len(orderSNs); i += batchSize {
+		end := i + batchSize
+		if end > len(orderSNs) {
+			end = len(orderSNs)
 		}
-		snList += sn
-	}
+		batch := orderSNs[i:end]
 
-	url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s&order_sn_list=%s",
-		cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign, snList)
+		timestamp := fmt.Sprintf("%d", time.Now().Unix())
+		path := "/api/v2/order/get_order_detail"
+		baseString := BuildAPIBaseString(cfg.PartnerID, path, timestamp, accessToken, shopID)
+		sign := GenerateShopeeSignature(cfg.PartnerKey, baseString)
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
+		snList := ""
+		for j, sn := range batch {
+			if j > 0 {
+				snList += ","
+			}
+			snList += sn
+		}
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	res, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
+		// We request item_list and pay_time explicitly
+		url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s&order_sn_list=%s&response_optional_fields=item_list,pay_time",
+			cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign, snList)
 
-	// Read body into buffer to retain raw payload
-	bodyBytes, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return allMappedDetails, err
+		}
 
-	var detailRes shopeeOrderDetailResponse
-	if err := json.Unmarshal(bodyBytes, &detailRes); err != nil {
-		return nil, err
-	}
+		client := &http.Client{Timeout: 30 * time.Second}
+		res, err := client.Do(req)
+		if err != nil {
+			return allMappedDetails, err
+		}
 
-	if detailRes.Error != "" {
-		return nil, fmt.Errorf("shopee api error: %s - %s", detailRes.Error, detailRes.Message)
-	}
+		bodyBytes, err := io.ReadAll(res.Body)
+		res.Body.Close()
+		if err != nil {
+			return allMappedDetails, err
+		}
 
-	var mappedDetails []ShopeeOrderDetail
-	for _, d := range detailRes.Response.OrderList {
+		var detailRes shopeeOrderDetailResponse
+		if err := json.Unmarshal(bodyBytes, &detailRes); err != nil {
+			return allMappedDetails, err
+		}
 
-		// Map items
-		var items []ShopeeOrderItem
-		for _, item := range d.ItemList {
-			items = append(items, ShopeeOrderItem{
-				ItemID:     item.ItemID,
-				ModelID:    item.ModelID,
-				ItemName:   item.ItemName,
-				ModelName:  item.ModelName,
-				ItemSKU:    item.ItemSKU,
-				ModelSKU:   item.ModelSKU,
-				ModelQty:   item.ModelQty,
-				ModelPrice: item.ModelPrice,
+		if detailRes.Error != "" {
+			return allMappedDetails, fmt.Errorf("shopee api error in batch: %s - %s", detailRes.Error, detailRes.Message)
+		}
+
+		for _, d := range detailRes.Response.OrderList {
+			var items []ShopeeOrderItem
+			for _, item := range d.ItemList {
+				items = append(items, ShopeeOrderItem{
+					ItemID:     item.ItemID,
+					ModelID:    item.ModelID,
+					ItemName:   item.ItemName,
+					ModelName:  item.ModelName,
+					ItemSKU:    item.ItemSKU,
+					ModelSKU:   item.ModelSKU,
+					ModelQty:   item.ModelQty,
+					ModelPrice: item.ModelPrice,
+				})
+			}
+
+			rawJSON, _ := json.Marshal(d)
+			allMappedDetails = append(allMappedDetails, ShopeeOrderDetail{
+				OrderSN:     d.OrderSN,
+				Region:      d.Region,
+				Currency:    d.Currency,
+				TotalAmount: d.TotalAmount,
+				OrderStatus: d.OrderStatus,
+				CreateTime:  d.CreateTime,
+				PayTime:     d.PayTime,
+				ItemList:    items,
+				RawPayload:  string(rawJSON),
 			})
 		}
-
-		rawJSON, _ := json.Marshal(d)
-
-		mappedDetails = append(mappedDetails, ShopeeOrderDetail{
-			OrderSN:     d.OrderSN,
-			Region:      d.Region,
-			Currency:    d.Currency,
-			TotalAmount: d.TotalAmount,
-			OrderStatus: d.OrderStatus,
-			CreateTime:  d.CreateTime,
-			PayTime:     d.PayTime,
-			ItemList:    items,
-			RawPayload:  string(rawJSON),
-		})
 	}
 
-	return mappedDetails, nil
+	return allMappedDetails, nil
 }
 
 // PullProducts pulls products from Shopee.

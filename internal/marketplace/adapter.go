@@ -137,7 +137,7 @@ type MarketplaceAdapter interface {
 	GetShopInfo(accessToken string, shopID string) (*ShopeeShopInfo, error)
 
 	// PullOrders pulls orders from the marketplace.
-	PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error)
+	PullOrders(accessToken, shopID string, timeFrom, timeTo int64, pageSize int, cursor string) (*ShopeeOrderListResponse, error)
 
 	// GetOrderDetails pulls detailed information for a list of order IDs.
 	GetOrderDetails(accessToken, shopID string, orderSNs []string) ([]ShopeeOrderDetail, error)

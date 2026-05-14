@@ -386,8 +386,9 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 	var req struct {
 		TimeFrom    int64  `json:"time_from"`
 		TimeTo      int64  `json:"time_to"`
-		OrderStatus string `json:"order_status"`
-		PageSize    int    `json:"page_size"`
+		OrderStatus string `json:"order_status"` // Optional
+		PageSize    int    `json:"page_size"`    // Optional
+		Cursor      string `json:"cursor"`       // Optional for pagination
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -395,9 +396,26 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		return
 	}
 
-	if req.TimeFrom == 0 || req.TimeTo == 0 {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "time_from and time_to are required"))
+	// Validation
+	if req.TimeFrom <= 0 || req.TimeTo <= 0 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_FAILED", "time_from and time_to are required and must be positive"))
 		return
+	}
+
+	if req.TimeFrom >= req.TimeTo {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_FAILED", "time_from must be before time_to"))
+		return
+	}
+
+	// Limit time window to 15 days for Shopee safety
+	maxWindow := int64(15 * 24 * 60 * 60)
+	if req.TimeTo-req.TimeFrom > maxWindow {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_FAILED", "Time window cannot exceed 15 days"))
+		return
+	}
+
+	if req.PageSize <= 0 || req.PageSize > 100 {
+		req.PageSize = 50 // Default safe batch
 	}
 
 	store, err := h.storeRepo.FindByID(storeID)
@@ -412,6 +430,12 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 			"status":  "unsupported",
 			"message": "This marketplace is not supported.",
 		}, "Marketplace not supported"))
+		return
+	}
+
+	// Only Shopee supported for manual pull in this sprint
+	if store.Marketplace != "shopee" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("VALIDATION_ERROR", "Order pull is currently only supported for Shopee"))
 		return
 	}
 
@@ -536,7 +560,7 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 	}
 
 	// Pull order list from marketplace
-	listRes, err := adapter.PullOrders(accessToken, extStoreID, req.TimeFrom, req.TimeTo, "")
+	listRes, err := adapter.PullOrders(accessToken, extStoreID, req.TimeFrom, req.TimeTo, req.PageSize, req.Cursor)
 
 	if err != nil {
 		if errors.Is(err, marketplace.ErrNotImplemented) {
@@ -550,10 +574,12 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		return
 	}
 
-	// Attempt to pull details for the first batch
+	// Attempt to pull details for the batch
 	var orderSNs []string
-	for _, o := range listRes.Orders {
-		orderSNs = append(orderSNs, o.OrderSN)
+	if listRes != nil {
+		for _, o := range listRes.Orders {
+			orderSNs = append(orderSNs, o.OrderSN)
+		}
 	}
 
 	var details []marketplace.ShopeeOrderDetail
@@ -604,6 +630,12 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 
 	// Prepare raw summary without secrets
 	summary := gin.H{
+		"time_from":            req.TimeFrom,
+		"time_to":              req.TimeTo,
+		"order_status_filter":  req.OrderStatus,
+		"page_size":            req.PageSize,
+		"has_next_page":        false,
+		"next_cursor":          "",
 		"records_processed":    len(details),
 		"records_created":      recordsCreated,
 		"records_updated":      recordsUpdated,
@@ -611,6 +643,12 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		"unmapped_items_count": totalUnmappedCount,
 		"errors":               pullErrors,
 	}
+
+	if listRes != nil {
+		summary["has_next_page"] = listRes.More
+		summary["next_cursor"] = listRes.NextCursor
+	}
+
 	summaryJSON, _ := json.Marshal(summary)
 	summaryStr := string(summaryJSON)
 
@@ -638,7 +676,7 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 	}
 	_ = h.syncRepo.CreateSyncLog(logRec)
 
-	c.JSON(http.StatusOK, models.SuccessResponse(gin.H{
+	response := gin.H{
 		"status":               finalStatus,
 		"message":              statusMsg,
 		"records_processed":    len(details),
@@ -648,7 +686,14 @@ func (h *IntegrationHandler) PullOrders(c *gin.Context) {
 		"unmapped_items_count": totalUnmappedCount,
 		"sync_log_id":          logRec.ID,
 		"errors":               pullErrors,
-	}, statusMsg))
+	}
+
+	if listRes != nil {
+		response["has_next_page"] = listRes.More
+		response["next_cursor"] = listRes.NextCursor
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(response, statusMsg))
 
 }
 

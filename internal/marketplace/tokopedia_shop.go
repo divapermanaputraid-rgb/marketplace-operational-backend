@@ -39,7 +39,7 @@ func (a *TokopediaShopAdapter) GetShopInfo(accessToken string, shopID string) (*
 
 // PullOrders pulls orders from Tokopedia Shop.
 // Sprint 13: Returns ErrNotImplemented.
-func (a *TokopediaShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, cursor string) (*ShopeeOrderListResponse, error) {
+func (a *TokopediaShopAdapter) PullOrders(accessToken, shopID string, timeFrom, timeTo int64, pageSize int, cursor string) (*ShopeeOrderListResponse, error) {
 	return nil, ErrNotImplemented
 }
 

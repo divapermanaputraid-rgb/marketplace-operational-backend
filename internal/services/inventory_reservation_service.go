@@ -48,33 +48,39 @@ func (s *InventoryReservationService) ReserveStockForOrder(orderID uuid.UUID) (*
 	}
 
 	err = s.inventoryRepo.WithTransaction(func(tx *gorm.DB) error {
+		// Aggregate quantities by inventory item to handle same-SKU line items safely
+		type invKey struct {
+			ProductID string
+			VariantID string
+		}
+		itemTotals := make(map[invKey]int)
 		for _, item := range order.Items {
 			result.RecordsProcessed++
-
-			// 1. Only process mapped items
 			if item.ProductID == nil {
 				result.RecordsSkipped++
 				continue
 			}
-
-			// 2. Find inventory item
 			vID := ""
 			if item.ProductVariantID != nil {
 				vID = item.ProductVariantID.String()
 			}
+			key := invKey{ProductID: item.ProductID.String(), VariantID: vID}
+			itemTotals[key] += item.Quantity
+		}
 
-			// Default to Main Warehouse for now
-			invItem, err := s.inventoryRepo.GetByProductAndVariant(item.ProductID.String(), vID, "Main Warehouse")
+		for key, totalQty := range itemTotals {
+			// Find inventory item
+			invItem, err := s.inventoryRepo.GetByProductAndVariant(key.ProductID, key.VariantID, "Main Warehouse")
 			if err != nil {
-				return fmt.Errorf("failed to find inventory for SKU %s: %w", item.ProductName, err)
+				return fmt.Errorf("failed to find inventory for product %s: %w", key.ProductID, err)
 			}
 			if invItem == nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("Inventory item not found for product %s", item.ProductName))
+				result.Errors = append(result.Errors, fmt.Sprintf("Inventory item not found for product %s", key.ProductID))
 				result.Status = "error"
 				return errors.New("missing inventory item for mapped product")
 			}
 
-			// 3. Idempotency check: Already reserved?
+			// Idempotency check: Already reserved?
 			existing, err := s.inventoryRepo.GetMovementByReference(invItem.ID.String(), "order", order.ID.String(), "reserve")
 			if err != nil {
 				return err
@@ -84,22 +90,22 @@ func (s *InventoryReservationService) ReserveStockForOrder(orderID uuid.UUID) (*
 				continue
 			}
 
-			// 4. Check stock
-			if invItem.AvailableQuantity < item.Quantity {
+			// Check stock
+			if invItem.AvailableQuantity < totalQty {
 				result.Status = "insufficient_stock"
-				return fmt.Errorf("insufficient stock for %s: have %d, need %d", invItem.SKU, invItem.AvailableQuantity, item.Quantity)
+				return fmt.Errorf("insufficient stock for %s: have %d, need %d", invItem.SKU, invItem.AvailableQuantity, totalQty)
 			}
 
-			// 5. Update quantities
+			// Update quantities
 			quantityBefore := invItem.AvailableQuantity
-			invItem.AvailableQuantity -= item.Quantity
-			invItem.ReservedQuantity += item.Quantity
+			invItem.AvailableQuantity -= totalQty
+			invItem.ReservedQuantity += totalQty
 
 			if err := tx.Save(invItem).Error; err != nil {
 				return err
 			}
 
-			// 6. Create movement
+			// Create movement
 			refType := "order"
 			refID := order.ID.String()
 			notes := fmt.Sprintf("Reserved for Order %s", order.OrderNumber)
@@ -109,7 +115,7 @@ func (s *InventoryReservationService) ReserveStockForOrder(orderID uuid.UUID) (*
 				ProductID:        invItem.ProductID,
 				ProductVariantID: invItem.ProductVariantID,
 				MovementType:     "reserve",
-				QuantityDelta:    item.Quantity,
+				QuantityDelta:    totalQty,
 				QuantityBefore:   quantityBefore,
 				QuantityAfter:    invItem.AvailableQuantity,
 				ReferenceType:    &refType,
@@ -149,21 +155,44 @@ func (s *InventoryReservationService) ReleaseReservationForOrder(orderID uuid.UU
 	}
 
 	err = s.inventoryRepo.WithTransaction(func(tx *gorm.DB) error {
-		// 1. Find all reserve movements for this order
+		// 1. Find all movements for this order
 		movements, err := s.inventoryRepo.ListMovementsByReference("order", order.ID.String())
 		if err != nil {
 			return err
 		}
 
+		// 2. Aggregate reserve quantities by inventory item
+		type releaseInfo struct {
+			InventoryItemID uuid.UUID
+			TotalDelta      int
+			ProductID       uuid.UUID
+			VariantID       *uuid.UUID
+		}
+		aggregateMap := make(map[uuid.UUID]*releaseInfo)
+
 		for _, m := range movements {
 			if m.MovementType != "reserve" {
 				continue
 			}
+			
+			info, ok := aggregateMap[m.InventoryItemID]
+			if !ok {
+				info = &releaseInfo{
+					InventoryItemID: m.InventoryItemID,
+					TotalDelta:      0,
+					ProductID:       m.ProductID,
+					VariantID:       m.ProductVariantID,
+				}
+				aggregateMap[m.InventoryItemID] = info
+			}
+			info.TotalDelta += m.QuantityDelta
+		}
+
+		for itemID, info := range aggregateMap {
 			result.RecordsProcessed++
 
-			// 2. Check if already released
-			// We check if there's a release_reservation for this item and order
-			released, err := s.inventoryRepo.GetMovementByReference(m.InventoryItemID.String(), "order", order.ID.String(), "release_reservation")
+			// 3. Idempotency check: Already released?
+			released, err := s.inventoryRepo.GetMovementByReference(itemID.String(), "order", order.ID.String(), "release_reservation")
 			if err != nil {
 				return err
 			}
@@ -172,22 +201,22 @@ func (s *InventoryReservationService) ReleaseReservationForOrder(orderID uuid.UU
 				continue
 			}
 
-			// 3. Load current inventory item
+			// 4. Load current inventory item
 			var invItem models.InventoryItem
-			if err := tx.Where("id = ?", m.InventoryItemID).First(&invItem).Error; err != nil {
+			if err := tx.Where("id = ?", itemID).First(&invItem).Error; err != nil {
 				return err
 			}
 
-			// 4. Update quantities
+			// 5. Update quantities
 			quantityBefore := invItem.AvailableQuantity
-			invItem.AvailableQuantity += m.QuantityDelta
-			invItem.ReservedQuantity -= m.QuantityDelta
+			invItem.AvailableQuantity += info.TotalDelta
+			invItem.ReservedQuantity -= info.TotalDelta
 
 			if err := tx.Save(&invItem).Error; err != nil {
 				return err
 			}
 
-			// 5. Create movement
+			// 6. Create movement
 			refType := "order"
 			refID := order.ID.String()
 			notes := fmt.Sprintf("Released reservation for Order %s", order.OrderNumber)
@@ -197,7 +226,7 @@ func (s *InventoryReservationService) ReleaseReservationForOrder(orderID uuid.UU
 				ProductID:        invItem.ProductID,
 				ProductVariantID: invItem.ProductVariantID,
 				MovementType:     "release_reservation",
-				QuantityDelta:    m.QuantityDelta,
+				QuantityDelta:    info.TotalDelta,
 				QuantityBefore:   quantityBefore,
 				QuantityAfter:    invItem.AvailableQuantity,
 				ReferenceType:    &refType,
@@ -235,32 +264,39 @@ func (s *InventoryReservationService) ConfirmSaleForOrder(orderID uuid.UUID) (*R
 	}
 
 	err = s.inventoryRepo.WithTransaction(func(tx *gorm.DB) error {
+		// Aggregate quantities by inventory item to handle same-SKU line items safely
+		type invKey struct {
+			ProductID string
+			VariantID string
+		}
+		itemTotals := make(map[invKey]int)
 		for _, item := range order.Items {
 			result.RecordsProcessed++
-
-			// 1. Only process mapped items
 			if item.ProductID == nil {
 				result.RecordsSkipped++
 				continue
 			}
-
-			// 2. Find inventory item
 			vID := ""
 			if item.ProductVariantID != nil {
 				vID = item.ProductVariantID.String()
 			}
+			key := invKey{ProductID: item.ProductID.String(), VariantID: vID}
+			itemTotals[key] += item.Quantity
+		}
 
-			invItem, err := s.inventoryRepo.GetByProductAndVariant(item.ProductID.String(), vID, "Main Warehouse")
+		for key, totalQty := range itemTotals {
+			// Find inventory item
+			invItem, err := s.inventoryRepo.GetByProductAndVariant(key.ProductID, key.VariantID, "Main Warehouse")
 			if err != nil {
-				return fmt.Errorf("failed to find inventory for SKU %s: %w", item.ProductName, err)
+				return fmt.Errorf("failed to find inventory for product %s: %w", key.ProductID, err)
 			}
 			if invItem == nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("Inventory item not found for product %s", item.ProductName))
+				result.Errors = append(result.Errors, fmt.Sprintf("Inventory item not found for product %s", key.ProductID))
 				result.Status = "error"
 				return errors.New("missing inventory item for mapped product")
 			}
 
-			// 3. Idempotency check: Already confirmed/sold?
+			// Idempotency check: Already confirmed/sold?
 			confirmed, err := s.inventoryRepo.GetMovementByReference(invItem.ID.String(), "order", order.ID.String(), "confirm_sale")
 			if err != nil {
 				return err
@@ -270,40 +306,35 @@ func (s *InventoryReservationService) ConfirmSaleForOrder(orderID uuid.UUID) (*R
 				continue
 			}
 
-			// 4. Check if reservation exists
+			// Check if reservation exists
 			reserved, err := s.inventoryRepo.GetMovementByReference(invItem.ID.String(), "order", order.ID.String(), "reserve")
 			if err != nil {
 				return err
 			}
 			if reserved == nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("No active reservation found for %s", item.ProductName))
-				result.Status = "partially_mapped" // Or a specialized status
+				result.Errors = append(result.Errors, fmt.Sprintf("No active reservation found for product %s", key.ProductID))
+				result.Status = "partially_mapped"
 				result.RecordsSkipped++
 				continue
 			}
 
-			// 5. Load current inventory item (re-load to ensure fresh data in TX)
-			// Actually invItem was already loaded, but we might want to ensure we're inside the TX lock if using SELECT FOR UPDATE
-			// For now, simple update is fine as we are in a transaction.
-
-			// Check if we have enough in ReservedQuantity just in case
-			if invItem.ReservedQuantity < item.Quantity {
-				// This shouldn't happen if reservation was recorded, but safety first
-				result.Errors = append(result.Errors, fmt.Sprintf("Inconsistent reservation for %s: reserved %d, need %d", item.ProductName, invItem.ReservedQuantity, item.Quantity))
+			// Check if we have enough in ReservedQuantity
+			if invItem.ReservedQuantity < totalQty {
+				result.Errors = append(result.Errors, fmt.Sprintf("Inconsistent reservation for product %s: reserved %d, need %d", key.ProductID, invItem.ReservedQuantity, totalQty))
 				result.Status = "error"
 				return fmt.Errorf("inconsistent reservation for %s", invItem.SKU)
 			}
 
-			// 6. Update quantities
-			// Sale from Reserved: ReservedQuantity decreases, AvailableQuantity remains the same.
-			quantityBefore := invItem.AvailableQuantity
-			invItem.ReservedQuantity -= item.Quantity
+			// Update quantities
+			// QuantityBefore/After for confirm_sale should track ReservedQuantity
+			quantityBefore := invItem.ReservedQuantity
+			invItem.ReservedQuantity -= totalQty
 
 			if err := tx.Save(invItem).Error; err != nil {
 				return err
 			}
 
-			// 7. Create movement
+			// Create movement
 			refType := "order"
 			refID := order.ID.String()
 			notes := fmt.Sprintf("Sale confirmed for Order %s", order.OrderNumber)
@@ -313,9 +344,9 @@ func (s *InventoryReservationService) ConfirmSaleForOrder(orderID uuid.UUID) (*R
 				ProductID:        invItem.ProductID,
 				ProductVariantID: invItem.ProductVariantID,
 				MovementType:     "confirm_sale",
-				QuantityDelta:    item.Quantity,
+				QuantityDelta:    totalQty,
 				QuantityBefore:   quantityBefore,
-				QuantityAfter:    invItem.AvailableQuantity,
+				QuantityAfter:    invItem.ReservedQuantity,
 				ReferenceType:    &refType,
 				ReferenceID:      &refID,
 				Notes:            &notes,

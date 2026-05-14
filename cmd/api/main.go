@@ -147,10 +147,14 @@ func main() {
 		dashboard := protected.Group("/dashboard")
 		{
 			dashboard.GET("/summary", dashboardHandler.GetSummary)
-			dashboard.GET("/reports/orders", dashboardHandler.GetOrdersReport)
-			dashboard.GET("/reports/inventory", dashboardHandler.GetInventoryReport)
-			dashboard.GET("/reports/products", dashboardHandler.GetProductsReport)
-			dashboard.GET("/reports/sync", dashboardHandler.GetSyncReport)
+		}
+
+		reports := protected.Group("/reports")
+		{
+			reports.GET("/orders", dashboardHandler.GetOrdersReport)
+			reports.GET("/inventory", dashboardHandler.GetInventoryReport)
+			reports.GET("/products", dashboardHandler.GetProductsReport)
+			reports.GET("/sync", dashboardHandler.GetSyncReport)
 		}
 
 		integrations := protected.Group("/integrations")

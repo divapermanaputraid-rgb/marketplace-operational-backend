@@ -178,7 +178,7 @@ func (r *DashboardRepository) GetOrderMetrics() (total int64, statusCounts map[s
 }
 
 // Sync metrics
-func (r *DashboardRepository) GetSyncMetrics() (totalJobs int64, notConfigured int64, failed int64, success int64, latestLogs []models.SyncLog, err error) {
+func (r *DashboardRepository) GetSyncMetrics() (totalJobs int64, notConfigured int64, failed int64, partial int64, success int64, latestLogs []models.SyncLog, err error) {
 	err = r.db.Model(&models.SyncJob{}).Count(&totalJobs).Error
 	if err != nil {
 		return
@@ -194,13 +194,17 @@ func (r *DashboardRepository) GetSyncMetrics() (totalJobs int64, notConfigured i
 		return
 	}
 
+	err = r.db.Model(&models.SyncLog{}).Where("status = ?", "partial").Count(&partial).Error
+	if err != nil {
+		return
+	}
+
 	err = r.db.Model(&models.SyncLog{}).Where("status = ?", "success").Count(&success).Error
 	if err != nil {
 		return
 	}
 
 	err = r.db.Preload("SyncJob").Order("created_at desc").Limit(5).Find(&latestLogs).Error
-
 	return
 }
 

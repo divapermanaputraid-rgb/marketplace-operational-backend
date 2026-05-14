@@ -20,5 +20,6 @@ func (h *HealthHandler) Check(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":  "ok",
 		"service": "marketplace-ops-api",
+		"version": "0.2.0",
 	})
 }

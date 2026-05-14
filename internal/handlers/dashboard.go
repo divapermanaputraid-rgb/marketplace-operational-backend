@@ -37,6 +37,7 @@ func (h *DashboardHandler) GetSummary(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch mapping metrics"))
 		return
 	}
+
 	var mCoverage float64
 	if pTotal > 0 {
 		mCoverage = float64(mMapped) / float64(pTotal) * 100
@@ -57,7 +58,7 @@ func (h *DashboardHandler) GetSummary(c *gin.Context) {
 	}
 
 	// Sync Metrics
-	syncTotalJobs, syncNotConfigured, syncFailed, syncSuccess, syncLatestLogs, err := h.repo.GetSyncMetrics()
+	syncTotalJobs, syncNotConfigured, syncFailed, syncPartial, syncSuccess, syncLatestLogs, err := h.repo.GetSyncMetrics()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch sync metrics"))
 		return
@@ -107,6 +108,7 @@ func (h *DashboardHandler) GetSummary(c *gin.Context) {
 			"total_jobs":     syncTotalJobs,
 			"not_configured": syncNotConfigured,
 			"failed":         syncFailed,
+			"partial":        syncPartial,
 			"success":        syncSuccess,
 			"latest_logs":    syncLatestLogs,
 		},
@@ -134,7 +136,7 @@ func (h *DashboardHandler) GetOrdersReport(c *gin.Context) {
 		return
 	}
 
-	response := gin.H{
+	res := gin.H{
 		"order_status_counts":   statusCounts,
 		"payment_status_counts": paymentCounts,
 		"total_orders":          total,
@@ -142,8 +144,7 @@ func (h *DashboardHandler) GetOrdersReport(c *gin.Context) {
 		"sales_by_marketplace":  salesByMarketplace,
 		"recent_orders":         recentOrders,
 	}
-
-	c.JSON(http.StatusOK, models.SuccessResponse(response, ""))
+	c.JSON(http.StatusOK, models.SuccessResponse(res, ""))
 }
 
 func (h *DashboardHandler) GetInventoryReport(c *gin.Context) {
@@ -159,14 +160,13 @@ func (h *DashboardHandler) GetInventoryReport(c *gin.Context) {
 		return
 	}
 
-	response := gin.H{
+	res := gin.H{
 		"low_stock_items":          lowStockItems,
 		"total_available_quantity": totalAvailable,
 		"total_reserved_quantity":  totalReserved,
 		"total_damaged_quantity":   totalDamaged,
 	}
-
-	c.JSON(http.StatusOK, models.SuccessResponse(response, ""))
+	c.JSON(http.StatusOK, models.SuccessResponse(res, ""))
 }
 
 func (h *DashboardHandler) GetProductsReport(c *gin.Context) {
@@ -199,7 +199,7 @@ func (h *DashboardHandler) GetProductsReport(c *gin.Context) {
 		return
 	}
 
-	response := gin.H{
+	res := gin.H{
 		"product_status_counts": gin.H{
 			"active":   pActive,
 			"draft":    pDraft,
@@ -213,8 +213,7 @@ func (h *DashboardHandler) GetProductsReport(c *gin.Context) {
 		"mappings_by_marketplace": mappingsByMarketplace,
 		"total_mappings":          mTotal,
 	}
-
-	c.JSON(http.StatusOK, models.SuccessResponse(response, ""))
+	c.JSON(http.StatusOK, models.SuccessResponse(res, ""))
 }
 
 func (h *DashboardHandler) GetSyncReport(c *gin.Context) {
@@ -230,17 +229,16 @@ func (h *DashboardHandler) GetSyncReport(c *gin.Context) {
 		return
 	}
 
-	_, _, _, _, latestLogs, err := h.repo.GetSyncMetrics()
+	_, _, _, _, _, latestLogs, err := h.repo.GetSyncMetrics()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch sync metrics"))
 		return
 	}
 
-	response := gin.H{
+	res := gin.H{
 		"sync_job_status_counts": jobStatusCounts,
 		"sync_log_status_counts": logStatusCounts,
 		"latest_logs":            latestLogs,
 	}
-
-	c.JSON(http.StatusOK, models.SuccessResponse(response, ""))
+	c.JSON(http.StatusOK, models.SuccessResponse(res, ""))
 }

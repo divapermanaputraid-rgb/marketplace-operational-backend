@@ -174,7 +174,7 @@ func (s *InventoryReservationService) ReleaseReservationForOrder(orderID uuid.UU
 			if m.MovementType != "reserve" {
 				continue
 			}
-			
+
 			info, ok := aggregateMap[m.InventoryItemID]
 			if !ok {
 				info = &releaseInfo{

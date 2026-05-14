@@ -11,9 +11,6 @@ import (
 // AuthRequired is a Gin middleware that validates JWT tokens.
 // It extracts the token from the Authorization header (Bearer <token>),
 // validates it, and stores the admin ID in the context.
-//
-// This middleware will be fully connected in Sprint 2 (Auth).
-// For now, it provides the structure and validation logic.
 func AuthRequired(jwtService *services.JWTService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")

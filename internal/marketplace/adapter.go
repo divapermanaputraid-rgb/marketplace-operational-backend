@@ -117,7 +117,6 @@ type ShopeeProductVariant struct {
 }
 
 // MarketplaceAdapter defines the interface that all marketplace integrations must implement.
-// For Sprint 13, all methods return ErrNotImplemented or ErrMissingCredentials.
 type MarketplaceAdapter interface {
 	// MarketplaceName returns the canonical name of the marketplace (e.g., "shopee", "tiktok_shop").
 	MarketplaceName() string
@@ -173,10 +172,10 @@ func SupportedMarketplaces() []map[string]interface{} {
 		{
 			"id":                   "shopee",
 			"name":                 "Shopee",
-			"integration_status":   "not_implemented",
+			"integration_status":   "implemented",
 			"oauth_supported":      true,
 			"description":          "Shopee Open Platform integration via OAuth 2.0 with HMAC-SHA256 signing.",
-			"implementation_notes": "Adapter interface ready. Real API calls pending Sprint 14+.",
+			"implementation_notes": "Full support for Orders, Products, and Stock Sync.",
 		},
 		{
 			"id":                   "tiktok_shop",
@@ -184,7 +183,7 @@ func SupportedMarketplaces() []map[string]interface{} {
 			"integration_status":   "not_implemented",
 			"oauth_supported":      true,
 			"description":          "TikTok Shop Partner Center integration via OAuth 2.0.",
-			"implementation_notes": "Adapter interface ready. Requires approved developer account.",
+			"implementation_notes": "Adapter interface ready. Implementation pending.",
 		},
 		{
 			"id":                   "tokopedia_shop",
@@ -192,7 +191,7 @@ func SupportedMarketplaces() []map[string]interface{} {
 			"integration_status":   "not_implemented",
 			"oauth_supported":      true,
 			"description":          "Tokopedia Shop integration via TikTok Shop Partner Center APIs.",
-			"implementation_notes": "Adapter interface ready. Uses unified TikTok/Tokopedia API path.",
+			"implementation_notes": "Adapter interface ready. Implementation pending.",
 		},
 	}
 }

@@ -1,13 +1,11 @@
 .env
 .env.*
 !.env.example
+.cache/
+.gopath/
 /api
 /server
 /main
 *.log
 tmp/
 .DS_Store
-
-# Local Go caches
-.cache/
-.gopath/

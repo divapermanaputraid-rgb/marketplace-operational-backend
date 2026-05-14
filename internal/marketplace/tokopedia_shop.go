@@ -58,6 +58,6 @@ func (a *TokopediaShopAdapter) GetProductDetails(accessToken, shopID string, ite
 }
 
 // PushStock pushes stock levels to Tokopedia Shop.
-func (a *TokopediaShopAdapter) PushStock() error {
+func (a *TokopediaShopAdapter) UpdateStock(accessToken, shopID string, itemID int64, modelID int64, stock int) error {
 	return ErrNotImplemented
 }

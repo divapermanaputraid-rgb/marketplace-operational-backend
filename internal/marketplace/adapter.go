@@ -149,8 +149,8 @@ type MarketplaceAdapter interface {
 	// GetProductDetails pulls detailed information for a list of product IDs.
 	GetProductDetails(accessToken, shopID string, itemIDList []int64) ([]ShopeeProductDetail, error)
 
-	// PushStock pushes inventory stock levels to the marketplace. Not implemented yet.
-	PushStock() error
+	// UpdateStock updates inventory stock levels for a specific product/model on the marketplace.
+	UpdateStock(accessToken, shopID string, itemID int64, modelID int64, stock int) error
 }
 
 // GetAdapter returns the appropriate marketplace adapter for a given marketplace name.

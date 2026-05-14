@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,7 @@ type IntegrationHandler struct {
 	mappingRepo     *repositories.ProductMappingRepository
 	syncRepo        *repositories.SyncRepository
 	productRepo     *repositories.ProductRepository
+	inventoryRepo   *repositories.InventoryRepository
 }
 
 func NewIntegrationHandler(
@@ -34,6 +36,7 @@ func NewIntegrationHandler(
 	mappingRepo *repositories.ProductMappingRepository,
 	syncRepo *repositories.SyncRepository,
 	productRepo *repositories.ProductRepository,
+	inventoryRepo *repositories.InventoryRepository,
 ) *IntegrationHandler {
 	return &IntegrationHandler{
 		integrationRepo: integrationRepo,
@@ -42,6 +45,7 @@ func NewIntegrationHandler(
 		mappingRepo:     mappingRepo,
 		syncRepo:        syncRepo,
 		productRepo:     productRepo,
+		inventoryRepo:   inventoryRepo,
 	}
 }
 
@@ -1326,4 +1330,225 @@ func (h *IntegrationHandler) CreateMapping(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, models.SuccessResponse(mapping, "Mapping created successfully"))
+}
+
+// PushStockRequest defines the payload for manual stock push.
+type PushStockRequest struct {
+	ProductMappingID string `json:"product_mapping_id" binding:"required"`
+	Quantity         *int   `json:"quantity"` // If provided, use this quantity. If nil, use available quantity.
+	DryRun           bool   `json:"dry_run"`
+}
+
+// PushStockResponse defines the response for manual stock push.
+type PushStockResponse struct {
+	Status            string   `json:"status"`
+	Message           string   `json:"message"`
+	Marketplace       string   `json:"marketplace"`
+	StoreID           string   `json:"store_id"`
+	ProductMappingID  string   `json:"product_mapping_id"`
+	ExternalProductID string   `json:"external_product_id"`
+	ExternalVariantID string   `json:"external_variant_id"`
+	PushedQuantity    int      `json:"pushed_quantity"`
+	DryRun            bool     `json:"dry_run"`
+	SyncLogID         string   `json:"sync_log_id"`
+	Errors            []string `json:"errors,omitempty"`
+}
+
+// PushStock manually pushes internal stock to the marketplace.
+// POST /api/stores/:id/integration/stock/push
+func (h *IntegrationHandler) PushStock(c *gin.Context) {
+	storeID := c.Param("id")
+	var req PushStockRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_REQUEST", err.Error()))
+		return
+	}
+
+	store, err := h.storeRepo.FindByID(storeID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("NOT_FOUND", "Store not found"))
+		return
+	}
+
+	if store.Marketplace != "shopee" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("UNSUPPORTED_MARKETPLACE", "Manual stock push currently only supported for Shopee"))
+		return
+	}
+
+	// Get mapping
+	mapping, err := h.mappingRepo.GetByID(req.ProductMappingID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse("MAPPING_NOT_FOUND", "Product mapping not found"))
+		return
+	}
+
+	if mapping.StoreID.String() != storeID {
+		c.JSON(http.StatusForbidden, models.ErrorResponse("FORBIDDEN", "Mapping does not belong to this store"))
+		return
+	}
+
+	// Get inventory item
+	var inventoryItem *models.InventoryItem
+	if mapping.ProductVariantID != nil {
+		inventoryItem, err = h.inventoryRepo.GetByProductAndVariant(mapping.ProductID.String(), mapping.ProductVariantID.String(), "Main Warehouse")
+	} else {
+		inventoryItem, err = h.inventoryRepo.GetByProductAndVariant(mapping.ProductID.String(), "", "Main Warehouse")
+	}
+
+	if err != nil || inventoryItem == nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVENTORY_NOT_FOUND", "Internal inventory item not found"))
+		return
+	}
+
+	quantity := inventoryItem.AvailableQuantity
+	if req.Quantity != nil {
+		quantity = *req.Quantity
+	}
+
+	if quantity < 0 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("INVALID_QUANTITY", "Cannot push negative stock"))
+		return
+	}
+
+	// Prepare result
+	extProdID, _ := strconv.ParseInt(mapping.ExternalProductID, 10, 64)
+	extVarID := int64(0)
+	if mapping.ExternalVariantID != nil && *mapping.ExternalVariantID != "" {
+		extVarID, _ = strconv.ParseInt(*mapping.ExternalVariantID, 10, 64)
+	}
+
+	startTime := time.Now()
+	syncLog := &models.SyncLog{
+		ID:            uuid.New(),
+		StoreID:       &store.ID,
+		Marketplace:   "shopee",
+		SyncType:      "inventory",
+		SyncDirection: "push",
+		Status:        "started",
+		StartedAt:     &startTime,
+	}
+
+	response := PushStockResponse{
+		Marketplace:       "shopee",
+		StoreID:           store.ID.String(),
+		ProductMappingID:  mapping.ID.String(),
+		ExternalProductID: mapping.ExternalProductID,
+		ExternalVariantID: "",
+		PushedQuantity:    quantity,
+		DryRun:            req.DryRun,
+	}
+	if mapping.ExternalVariantID != nil {
+		response.ExternalVariantID = *mapping.ExternalVariantID
+	}
+
+	if req.DryRun {
+		now := time.Now()
+		syncLog.Status = "success"
+		syncLog.FinishedAt = &now
+		syncLog.RecordsProcessed = 1
+		msg := fmt.Sprintf("Dry run: Would push %d to Shopee item %s", quantity, mapping.ExternalProductID)
+		syncLog.Message = &msg
+		h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "success"
+		response.Message = "Dry run successful"
+		response.SyncLogID = syncLog.ID.String()
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// Real push
+	adapter, err := marketplace.GetAdapter("shopee")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to get adapter"))
+		return
+	}
+
+	creds, err := h.integrationRepo.FindCredentialByStoreID(storeID)
+	if err != nil || creds == nil {
+		now := time.Now()
+		syncLog.Status = "not_configured"
+		syncLog.FinishedAt = &now
+		msg := "Marketplace credentials not configured"
+		syncLog.Message = &msg
+		h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "failed"
+		response.Message = "Marketplace credentials not configured"
+		response.SyncLogID = syncLog.ID.String()
+		c.JSON(http.StatusPreconditionFailed, response)
+		return
+	}
+
+	// Decrypt tokens
+	if creds.EncryptedAccessToken == nil || *creds.EncryptedAccessToken == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse("TOKEN_MISSING", "Access token is missing."))
+		return
+	}
+
+	accessToken, err := security.DecryptToken(*creds.EncryptedAccessToken)
+	if err != nil {
+		now := time.Now()
+		syncLog.Status = "failed"
+		syncLog.FinishedAt = &now
+		msg := "Failed to decrypt tokens"
+		syncLog.Message = &msg
+		h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "failed"
+		response.Message = "Failed to decrypt credentials"
+		response.SyncLogID = syncLog.ID.String()
+		c.JSON(http.StatusInternalServerError, response)
+		return
+	}
+
+	if creds.AccessTokenExpiresAt != nil && time.Now().After(*creds.AccessTokenExpiresAt) {
+		now := time.Now()
+		syncLog.Status = "expired"
+		syncLog.FinishedAt = &now
+		msg := "Access token expired"
+		syncLog.Message = &msg
+		h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "failed"
+		response.Message = "Access token expired. Please reconnect or refresh."
+		response.SyncLogID = syncLog.ID.String()
+		c.JSON(http.StatusUnauthorized, response)
+		return
+	}
+
+	extStoreID := ""
+	if store.ExternalStoreID != nil {
+		extStoreID = *store.ExternalStoreID
+	}
+
+	err = adapter.UpdateStock(accessToken, extStoreID, extProdID, extVarID, quantity)
+	now := time.Now()
+	syncLog.FinishedAt = &now
+	if err != nil {
+		syncLog.Status = "failed"
+		errMsg := err.Error()
+		syncLog.ErrorMessage = &errMsg
+		msg := fmt.Sprintf("Failed to push stock: %v", err)
+		syncLog.Message = &msg
+		h.syncRepo.CreateSyncLog(syncLog)
+
+		response.Status = "failed"
+		response.Message = "Failed to push stock to Shopee"
+		response.SyncLogID = syncLog.ID.String()
+		response.Errors = []string{err.Error()}
+		c.JSON(http.StatusBadGateway, response)
+		return
+	}
+
+	syncLog.Status = "success"
+	syncLog.RecordsProcessed = 1
+	msg := fmt.Sprintf("Successfully pushed %d to Shopee item %s", quantity, mapping.ExternalProductID)
+	syncLog.Message = &msg
+	h.syncRepo.CreateSyncLog(syncLog)
+
+	response.Status = "success"
+	response.Message = "Stock pushed successfully"
+	response.SyncLogID = syncLog.ID.String()
+	c.JSON(http.StatusOK, response)
 }

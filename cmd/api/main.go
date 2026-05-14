@@ -53,7 +53,7 @@ func main() {
 	orderHandler := handlers.NewOrderHandler(orderRepo, storeRepo, reservationService)
 	syncHandler := handlers.NewSyncHandler(syncRepo, storeRepo)
 	dashboardHandler := handlers.NewDashboardHandler(dashboardRepo)
-	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo, orderRepo, productMappingRepo, syncRepo, productRepo)
+	integrationHandler := handlers.NewIntegrationHandler(integrationRepo, storeRepo, orderRepo, productMappingRepo, syncRepo, productRepo, inventoryRepo)
 
 	router := gin.Default()
 	router.Use(middleware.SetupCORS(cfg))
@@ -172,6 +172,7 @@ func main() {
 		stores.POST("/:id/integration/products/pull", integrationHandler.PullProducts)
 		stores.POST("/:id/integration/products/mapping-candidates", integrationHandler.PreviewMappingCandidates)
 		stores.POST("/:id/integration/products/mappings", integrationHandler.CreateMapping)
+		stores.POST("/:id/integration/stock/push", integrationHandler.PushStock)
 
 		orders.POST("/:id/confirm-sale", orderHandler.ConfirmSale)
 	}

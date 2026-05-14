@@ -57,6 +57,6 @@ func (a *TikTokShopAdapter) GetProductDetails(accessToken, shopID string, itemID
 }
 
 // PushStock pushes stock levels to TikTok Shop.
-func (a *TikTokShopAdapter) PushStock() error {
+func (a *TikTokShopAdapter) UpdateStock(accessToken, shopID string, itemID int64, modelID int64, stock int) error {
 	return ErrNotImplemented
 }

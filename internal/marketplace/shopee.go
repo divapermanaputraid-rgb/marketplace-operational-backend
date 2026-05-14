@@ -522,6 +522,62 @@ func (a *ShopeeAdapter) GetProductDetails(accessToken, shopID string, itemIDList
 }
 
 // PushStock pushes stock levels to Shopee.
-func (a *ShopeeAdapter) PushStock() error {
-	return ErrNotImplemented
+func (a *ShopeeAdapter) UpdateStock(accessToken, shopID string, itemID int64, modelID int64, stock int) error {
+	cfg, err := LoadShopeeConfig()
+	if err != nil {
+		return err
+	}
+
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	path := "/api/v2/product/update_stock"
+	baseString := BuildAPIBaseString(cfg.PartnerID, path, timestamp, accessToken, shopID)
+	sign := GenerateShopeeSignature(cfg.PartnerKey, baseString)
+
+	url := fmt.Sprintf("%s%s?partner_id=%s&timestamp=%s&access_token=%s&shop_id=%s&sign=%s",
+		cfg.BaseURL, path, cfg.PartnerID, timestamp, accessToken, shopID, sign)
+
+	payload := map[string]interface{}{
+		"item_id": itemID,
+		"stock_list": []map[string]interface{}{
+			{
+				"model_id": modelID,
+				"seller_stock": []map[string]interface{}{
+					{
+						"stock": stock,
+					},
+				},
+			},
+		},
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	type shopeeUpdateStockResponse struct {
+		Error    string      `json:"err"`
+		Message  string      `json:"message"`
+		Response interface{} `json:"response"`
+	}
+
+	var stockRes shopeeUpdateStockResponse
+	if err := json.NewDecoder(res.Body).Decode(&stockRes); err != nil {
+		return err
+	}
+
+	if stockRes.Error != "" {
+		return fmt.Errorf("shopee api error: %s - %s", stockRes.Error, stockRes.Message)
+	}
+
+	return nil
 }

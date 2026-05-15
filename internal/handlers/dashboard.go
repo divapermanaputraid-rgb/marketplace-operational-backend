@@ -242,3 +242,84 @@ func (h *DashboardHandler) GetSyncReport(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, models.SuccessResponse(res, ""))
 }
+
+func (h *DashboardHandler) GetShopeeOperations(c *gin.Context) {
+	sTotal, sConnected, sExpired, err := h.repo.GetShopeeStoreMetrics()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch Shopee store metrics"))
+		return
+	}
+
+	fSync, pSync, lastOrder, lastProduct, lastStock, err := h.repo.GetShopeeSyncMetrics()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch Shopee sync metrics"))
+		return
+	}
+
+	mMapped, mUnmapped, err := h.repo.GetShopeeMappingMetrics()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch Shopee mapping metrics"))
+		return
+	}
+
+	// Calculate alerts
+	var alerts []map[string]interface{}
+	if sExpired > 0 {
+		alerts = append(alerts, map[string]interface{}{
+			"type":          "credential_expired",
+			"severity":      "critical",
+			"title":         "Shopee Credentials Expired",
+			"message":       "One or more Shopee stores have expired credentials. Reconnection required.",
+			"action_label":  "Go to Stores",
+			"action_target": "/stores",
+		})
+	}
+	if fSync > 0 {
+		alerts = append(alerts, map[string]interface{}{
+			"type":          "sync_failed",
+			"severity":      "warning",
+			"title":         "Shopee Sync Failures",
+			"message":       "Recent Shopee sync jobs have failed. Review logs for details.",
+			"action_label":  "Review Logs",
+			"action_target": "/sync",
+		})
+	}
+	if mUnmapped > 0 {
+		alerts = append(alerts, map[string]interface{}{
+			"type":          "unmapped_listings",
+			"severity":      "info",
+			"title":         "Unmapped Shopee Listings",
+			"message":       "There are new Shopee listings waiting to be mapped to internal products.",
+			"action_label":  "Map Products",
+			"action_target": "/product-mappings",
+		})
+	}
+
+	response := gin.H{
+		"metrics": gin.H{
+			"total_stores":                 sTotal,
+			"connected_stores":             sConnected,
+			"expired_credentials_count":    sExpired,
+			"failed_sync_count_24h":        fSync,
+			"partial_sync_count_24h":       pSync,
+			"last_successful_order_sync":   lastOrder,
+			"last_successful_product_sync": lastProduct,
+			"last_successful_stock_push":   lastStock,
+			"mapped_listing_count":         mMapped,
+			"unmapped_listing_count":       mUnmapped,
+		},
+		"alerts": alerts,
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(response, ""))
+}
+
+func (h *DashboardHandler) GetShopeeReconciliation(c *gin.Context) {
+	data, err := h.repo.GetShopeeReconciliationData()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse("INTERNAL_ERROR", "Failed to fetch reconciliation data"))
+		return
+	}
+
+	c.JSON(http.StatusOK, models.SuccessResponse(data, ""))
+}

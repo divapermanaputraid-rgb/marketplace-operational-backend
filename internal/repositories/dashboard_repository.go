@@ -297,3 +297,132 @@ func (r *DashboardRepository) GetSyncLogStatusCounts() (map[string]int64, error)
 	}
 	return countMap, nil
 }
+
+// Shopee Operations specific methods
+func (r *DashboardRepository) GetShopeeStoreMetrics() (total int64, connected int64, expired int64, err error) {
+	err = r.db.Model(&models.Store{}).Where("marketplace = ?", "shopee").Count(&total).Error
+	if err != nil {
+		return
+	}
+
+	err = r.db.Model(&models.Store{}).Where("marketplace = ? AND is_active = ?", "shopee", true).Count(&connected).Error
+	if err != nil {
+		return
+	}
+
+	err = r.db.Model(&models.MarketplaceCredential{}).Where("marketplace = ? AND access_token_expires_at < NOW()", "shopee").Count(&expired).Error
+	return
+}
+
+func (r *DashboardRepository) GetShopeeSyncMetrics() (failed int64, partial int64, lastOrderSync *models.SyncLog, lastProductSync *models.SyncLog, lastStockPush *models.SyncLog, err error) {
+	err = r.db.Model(&models.SyncLog{}).Where("marketplace = ? AND status = ? AND created_at > NOW() - INTERVAL '24 hours'", "shopee", "failed").Count(&failed).Error
+	if err != nil {
+		return
+	}
+
+	err = r.db.Model(&models.SyncLog{}).Where("marketplace = ? AND status = ? AND created_at > NOW() - INTERVAL '24 hours'", "shopee", "partial").Count(&partial).Error
+	if err != nil {
+		return
+	}
+
+	var logs []models.SyncLog
+	err = r.db.Where("marketplace = ? AND status = ? AND sync_type = ?", "shopee", "success", "orders").Order("created_at desc").Limit(1).Find(&logs).Error
+	if len(logs) > 0 {
+		lastOrderSync = &logs[0]
+	}
+
+	var productLogs []models.SyncLog
+	err = r.db.Where("marketplace = ? AND status = ? AND sync_type = ?", "shopee", "success", "products").Order("created_at desc").Limit(1).Find(&productLogs).Error
+	if len(productLogs) > 0 {
+		lastProductSync = &productLogs[0]
+	}
+
+	var stockLogs []models.SyncLog
+	err = r.db.Where("marketplace = ? AND status = ? AND sync_type = ?", "shopee", "success", "stock").Order("created_at desc").Limit(1).Find(&stockLogs).Error
+	if len(stockLogs) > 0 {
+		lastStockPush = &stockLogs[0]
+	}
+
+	return
+}
+
+func (r *DashboardRepository) GetShopeeMappingMetrics() (mapped int64, unmapped int64, err error) {
+	err = r.db.Model(&models.MarketplaceProductMapping{}).Where("marketplace = ?", "shopee").Count(&mapped).Error
+	if err != nil {
+		return
+	}
+
+	err = r.db.Model(&models.ShopeeMappingCandidate{}).Count(&unmapped).Error
+	return
+}
+
+func (r *DashboardRepository) GetShopeeReconciliationData() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	// We join mappings with inventory items to compare stock
+	// This only works if we have some form of "last known marketplace stock"
+	// For Shopee, we can try to find the candidate if it exists, or just show internal stock for now.
+	// Actually, let's look for ShopeeMappingCandidate which holds the snapshot.
+
+	type ReconRow struct {
+		ID                      string
+		StoreID                 string
+		ExternalProductID       string
+		ExternalVariantID       string
+		InternalProductName     string
+		InternalAvailableQty    int
+		LastKnownMarketplaceQty int
+		MarketplaceName         string
+	}
+
+	var rows []ReconRow
+	query := `
+		SELECT 
+			m.id, 
+			m.store_id, 
+			m.external_product_id, 
+			m.external_variant_id, 
+			p.name as internal_product_name,
+			COALESCE(i.available_quantity, 0) as internal_available_qty,
+			COALESCE(c.available_quantity, 0) as last_known_marketplace_qty,
+			m.marketplace as marketplace_name
+		FROM marketplace_product_mappings m
+		JOIN products p ON m.product_id = p.id
+		LEFT JOIN inventory_items i ON (m.product_id = i.product_id AND (m.product_variant_id IS NULL OR m.product_variant_id = i.product_variant_id))
+		LEFT JOIN shopee_mapping_candidates c ON (m.external_product_id = CAST(c.item_id AS TEXT) AND (m.external_variant_id IS NULL OR m.external_variant_id = CAST(c.model_id AS TEXT)))
+		WHERE m.marketplace = 'shopee' AND m.deleted_at IS NULL
+	`
+
+	err := r.db.Raw(query).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	for _, row := range rows {
+		diff := row.InternalAvailableQty - row.LastKnownMarketplaceQty
+		severity := "ok"
+		if diff != 0 {
+			severity = "warning"
+			if row.InternalAvailableQty == 0 && row.LastKnownMarketplaceQty > 0 {
+				severity = "critical" // Overselling risk
+			} else if row.InternalAvailableQty > 0 && row.LastKnownMarketplaceQty == 0 {
+				severity = "info" // Missing sales opportunity
+			}
+		}
+
+		results = append(results, map[string]interface{}{
+			"product_mapping_id":           row.ID,
+			"store_id":                     row.StoreID,
+			"external_product_id":          row.ExternalProductID,
+			"external_variant_id":          row.ExternalVariantID,
+			"internal_product_name":        row.InternalProductName,
+			"internal_available_quantity":  row.InternalAvailableQty,
+			"last_known_marketplace_stock": row.LastKnownMarketplaceQty,
+			"difference":                   diff,
+			"severity":                     severity,
+			"recommendation":               "review_mapping",
+		})
+	}
+
+	return results, nil
+}

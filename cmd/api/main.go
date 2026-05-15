@@ -154,6 +154,7 @@ func main() {
 		dashboard := protected.Group("/dashboard")
 		{
 			dashboard.GET("/summary", dashboardHandler.GetSummary)
+			dashboard.GET("/shopee-operations", dashboardHandler.GetShopeeOperations)
 		}
 
 		reports := protected.Group("/reports")
@@ -162,6 +163,7 @@ func main() {
 			reports.GET("/inventory", dashboardHandler.GetInventoryReport)
 			reports.GET("/products", dashboardHandler.GetProductsReport)
 			reports.GET("/sync", dashboardHandler.GetSyncReport)
+			reports.GET("/shopee/reconciliation", dashboardHandler.GetShopeeReconciliation)
 		}
 
 		integrations := protected.Group("/integrations")

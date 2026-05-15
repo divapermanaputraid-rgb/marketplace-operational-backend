@@ -22,6 +22,7 @@ type SyncJob struct {
 	NextRunAt               *time.Time     `gorm:"type:timestamptz" json:"next_run_at,omitempty"`
 	LastSuccessAt           *time.Time     `gorm:"type:timestamptz" json:"last_success_at,omitempty"`
 	LastError               *string        `gorm:"type:text" json:"last_error,omitempty"`
+	Config                  *string        `gorm:"type:jsonb" json:"config,omitempty"`
 	CreatedAt               time.Time      `gorm:"type:timestamptz;not null;autoCreateTime" json:"created_at"`
 	UpdatedAt               time.Time      `gorm:"type:timestamptz;not null;autoUpdateTime" json:"updated_at"`
 	DeletedAt               gorm.DeletedAt `gorm:"type:timestamptz;index" json:"-"`

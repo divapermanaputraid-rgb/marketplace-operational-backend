@@ -44,7 +44,7 @@ func main() {
 
 	jwtService := services.NewJWTService(cfg.JWTSecret)
 	reservationService := services.NewInventoryReservationService(inventoryRepo, orderRepo)
-	syncExecutionService := services.NewSyncExecutionService(syncRepo, storeRepo, integrationRepo, orderRepo, productMappingRepo, productRepo)
+	syncExecutionService := services.NewSyncExecutionService(syncRepo, storeRepo, integrationRepo, orderRepo, productMappingRepo, productRepo, inventoryRepo)
 
 	// Workers
 	syncWorker := workers.NewSyncWorker(syncRepo, syncExecutionService, cfg.SyncWorkerInterval, cfg.SyncWorkerEnabled)
